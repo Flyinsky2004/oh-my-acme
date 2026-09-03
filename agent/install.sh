@@ -42,8 +42,14 @@ done
 
 if [ "$(id -u)" -ne 0 ]; then echo "must run as root" >&2; exit 1; fi
 [ "$(uname -s)" = "Linux" ] || { echo "only Linux is supported" >&2; exit 1; }
-[ -n "$SERVER_URL" ] || { echo "-server is required" >&2; exit 1; }
-[ -n "$TOKEN" ] || { echo "-token is required" >&2; exit 1; }
+
+# A fresh installation needs registration material. An existing installation
+# keeps config.json and may be upgraded with only -version.
+if [ ! -f "${INSTALL_DIR}/config.json" ]; then
+  [ -n "$SERVER_URL" ] || { echo "-server is required for first install" >&2; exit 1; }
+  [ -n "$TOKEN" ] || { echo "-token is required for first install" >&2; exit 1; }
+  [ -n "$CA_FINGERPRINT" ] || { echo "-ca-fingerprint is required for first install" >&2; exit 1; }
+fi
 
 ARCH="$(uname -m)"
 case "$ARCH" in

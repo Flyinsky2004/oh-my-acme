@@ -100,14 +100,21 @@ func (s *Store) load() error {
 	return nil
 }
 
-// State returns a snapshot copy of the current state. Callers must not mutate
-// it directly; use the mutating methods below to apply changes through the
-// serialized write path.
+// State returns a deep snapshot of the current state. The application is
+// small and file-backed, so a JSON round trip is preferable to exposing map or
+// pointer aliases that could race with background issuance and HTMX polling.
 func (s *Store) State() domain.State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.state // shallow share of maps is intentional but handled carefully
-	return st
+	data, err := json.Marshal(&s.state)
+	if err != nil {
+		panic(fmt.Sprintf("clone state: %v", err))
+	}
+	var snapshot domain.State
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		panic(fmt.Sprintf("clone state: %v", err))
+	}
+	return snapshot
 }
 
 // Save writes the current state to disk atomically. Callers that mutate state

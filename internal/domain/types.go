@@ -122,16 +122,21 @@ type Certificate struct {
 
 // Agent is a target machine that receives certificates.
 type Agent struct {
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	Address       string      `json:"address"` // IP/hostname reachable by the server for mTLS push
-	Port          int         `json:"port"`    // agent listen port
-	Status        AgentStatus `json:"status"`
-	Version       string      `json:"version,omitempty"`
-	RegisteredAt  time.Time   `json:"registered_at"`
-	CertExpiresAt time.Time   `json:"cert_expires_at,omitempty"`
-	LastError     string      `json:"last_error,omitempty"`
-	LastSeenAt    time.Time   `json:"last_seen_at,omitempty"`
+	ID                  string          `json:"id"`
+	Name                string          `json:"name"`
+	Address             string          `json:"address"` // IP/hostname reachable by the server for mTLS push
+	Port                int             `json:"port"`    // agent listen port
+	Status              AgentStatus     `json:"status"`
+	Version             string          `json:"version,omitempty"`
+	GOOS                string          `json:"goos,omitempty"`
+	GOARCH              string          `json:"goarch,omitempty"`
+	UpdateStatus        OperationStatus `json:"update_status,omitempty"`
+	UpdateTargetVersion string          `json:"update_target_version,omitempty"`
+	UpdateError         string          `json:"update_error,omitempty"`
+	RegisteredAt        time.Time       `json:"registered_at"`
+	CertExpiresAt       time.Time       `json:"cert_expires_at,omitempty"`
+	LastError           string          `json:"last_error,omitempty"`
+	LastSeenAt          time.Time       `json:"last_seen_at,omitempty"`
 }
 
 // TokenRecord is a one-time registration token.

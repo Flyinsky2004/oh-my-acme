@@ -7,22 +7,31 @@
 package agent
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Flyinsky2004/oh-my-acme/internal/protocol"
+	"github.com/Flyinsky2004/oh-my-acme/internal/updater"
 )
 
 // Version is set at build time via -ldflags.
 var Version = "dev"
+
+// ErrRestart asks main to exit with a non-zero status after self-update so
+// systemd's fixed Restart=on-failure policy starts the new binary.
+var ErrRestart = errors.New("restart requested")
 
 var safeDomain = regexp.MustCompile(`^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$`)
 
@@ -34,6 +43,10 @@ type Agent struct {
 	nginxPath      string
 	systemctlPath  string
 	nginxInstalled bool
+
+	updateMu  sync.Mutex
+	updateFn  func(context.Context, string) (string, error)
+	restartCh chan struct{}
 }
 
 // New builds an Agent, resolving the nginx/systemctl paths from a fixed
@@ -48,7 +61,10 @@ func New(cfg Config, log *slog.Logger) (*Agent, error) {
 	if cfg.CertFile == "" || cfg.KeyFile == "" || cfg.ServerCAFile == "" {
 		return nil, fmt.Errorf("config: mTLS identity (cert_file/key_file/server_ca_file) is required")
 	}
-	a := &Agent{cfg: cfg, log: log, started: time.Now()}
+	a := &Agent{cfg: cfg, log: log, started: time.Now(), restartCh: make(chan struct{}, 1)}
+	a.updateFn = func(ctx context.Context, target string) (string, error) {
+		return updater.UpdateTo(ctx, updater.ComponentAgent, Version, target)
+	}
 	a.nginxPath = resolveFirst(whitelistedNginx)
 	a.systemctlPath = resolveFirst(whitelistedSystemctl)
 	a.nginxInstalled = a.nginxPath != ""
@@ -88,21 +104,68 @@ func (a *Agent) TLSConfig() (*tls.Config, error) {
 	}, nil
 }
 
+// RestartRequests is signaled after a verified binary update.
+func (a *Agent) RestartRequests() <-chan struct{} { return a.restartCh }
+
 // Handler returns the HTTP handler serving the agent API.
 func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+protocol.AgentAPIPrefix+"/health", a.handleHealth)
 	mux.HandleFunc("POST "+protocol.AgentAPIPrefix+"/deploy", a.handleDeploy)
+	mux.HandleFunc("POST "+protocol.AgentAPIPrefix+"/update", a.handleUpdate)
 	return mux
 }
 
 func (a *Agent) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, protocol.HealthResponse{
-		AgentID:        a.cfg.AgentID,
-		Version:        Version,
-		UptimeSeconds:  int64(time.Since(a.started).Seconds()),
-		NginxInstalled: a.nginxInstalled,
+		AgentID: a.cfg.AgentID, Version: Version,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+		UptimeSeconds: int64(time.Since(a.started).Seconds()), NginxInstalled: a.nginxInstalled,
 	})
+}
+
+// handleUpdate accepts only a target version. The repository, URL, asset,
+// executable path and restart behavior are fixed inside the Agent/updater.
+func (a *Agent) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if !a.updateMu.TryLock() {
+		w.WriteHeader(http.StatusConflict)
+		writeJSON(w, protocol.UpdateResponse{
+			AgentID: a.cfg.AgentID, CurrentVersion: Version,
+			Error: "another update is already running",
+		})
+		return
+	}
+	defer a.updateMu.Unlock()
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	var req protocol.UpdateRequest
+	if err := decodeStrictJSON(r, &req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, protocol.UpdateResponse{AgentID: a.cfg.AgentID, CurrentVersion: Version, Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	target, err := a.updateFn(ctx, req.Version)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, protocol.UpdateResponse{
+			AgentID: a.cfg.AgentID, CurrentVersion: Version,
+			TargetVersion: req.Version, Error: err.Error(),
+		})
+		return
+	}
+	writeJSON(w, protocol.UpdateResponse{
+		Success: true, AgentID: a.cfg.AgentID, CurrentVersion: Version,
+		TargetVersion: target, Restarting: true,
+	})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	select {
+	case a.restartCh <- struct{}{}:
+	default:
+	}
 }
 
 // handleDeploy validates the request, installs the certificate version, and

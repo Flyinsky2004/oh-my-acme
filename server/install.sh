@@ -129,7 +129,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=${INSTALL_DIR}/data ${INSTALL_DIR}/pki ${INSTALL_DIR}/logs
+ReadWritePaths=${INSTALL_DIR}
 LimitNOFILE=65536
 
 [Install]

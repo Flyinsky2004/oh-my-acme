@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -50,6 +51,7 @@ func (w *Web) Handler() http.Handler {
 	mux.Handle("GET /certificates/new", w.auth(w.handleCertificateNew))
 	mux.Handle("POST /certificates", w.auth(w.handleCertificateCreate))
 	mux.Handle("POST /certificates/{id}/issue", w.auth(w.handleIssue))
+	mux.Handle("GET /certificates/{id}/row", w.auth(w.handleCertificateRow))
 	mux.Handle("POST /certificates/{id}/deploy", w.auth(w.handleDeploy))
 
 	mux.Handle("GET /credentials", w.auth(w.handleCredentials))
@@ -60,10 +62,12 @@ func (w *Web) Handler() http.Handler {
 
 	mux.Handle("GET /agents", w.auth(w.handleAgents))
 	mux.Handle("POST /agents/token", w.auth(w.handleAgentToken))
+	mux.Handle("POST /agents/{id}/update", w.auth(w.handleAgentUpdate))
 	mux.Handle("POST /agents/{id}/delete", w.auth(w.handleAgentDelete))
 
 	mux.Handle("GET /settings", w.auth(w.handleSettings))
 	mux.Handle("POST /settings", w.auth(w.handleSettingsSave))
+	mux.Handle("POST /settings/update", w.auth(w.handleServerUpdate))
 	mux.Handle("POST /settings/ca", w.auth(w.handleCAAdd))
 	mux.Handle("POST /settings/ca/{id}/default", w.auth(w.handleCADefault))
 
@@ -130,12 +134,18 @@ func (w *Web) render(rw http.ResponseWriter, r *http.Request, name string, data 
 func (w *Web) page(rw http.ResponseWriter, r *http.Request, title, path, fragment string, data any) error {
 	var b strings.Builder
 	if err := w.tmpl.ExecuteTemplate(&b, fragment, data); err != nil {
+		w.srv.log.Error("render page fragment failed", "fragment", fragment, "err", err)
+		http.Error(rw, "页面渲染失败，请查看 Server 日志", http.StatusInternalServerError)
 		return err
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-	return w.tmpl.ExecuteTemplate(rw, "layout", map[string]any{
+	if err := w.tmpl.ExecuteTemplate(rw, "layout", map[string]any{
 		"Title": title, "Path": path, "Content": template.HTML(b.String()),
-	})
+	}); err != nil {
+		w.srv.log.Error("render page layout failed", "fragment", fragment, "err", err)
+		return err
+	}
+	return nil
 }
 
 func (w *Web) redirect(rw http.ResponseWriter, r *http.Request, to string) {
@@ -229,23 +239,9 @@ func (w *Web) handleDashboard(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Web) handleCertificates(rw http.ResponseWriter, r *http.Request) {
 	st := w.srv.st.State()
-	type row struct {
-		ID, RootDomain, IssueStatus, IssueStatusLabel, ExpiresAt, KeyType, LastError string
-	}
-	rows := []row{}
-	for _, c := range st.Certificates {
-		label := map[domain.OperationStatus]string{
-			domain.StatusPending: "待签发", domain.StatusRunning: "签发中",
-			domain.StatusSuccess: "已签发", domain.StatusFailed: "失败",
-		}[c.IssueStatus]
-		exp := "—"
-		if c.Current != nil {
-			exp = c.Current.ExpiresAt.Format("2006-01-02")
-		}
-		rows = append(rows, row{
-			ID: c.ID, RootDomain: c.RootDomain, IssueStatus: string(c.IssueStatus),
-			IssueStatusLabel: label, ExpiresAt: exp, KeyType: string(c.KeyType), LastError: c.LastError,
-		})
+	rows := make([]certificateRow, 0, len(st.Certificates))
+	for _, cert := range st.Certificates {
+		rows = append(rows, makeCertificateRow(cert))
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].RootDomain < rows[j].RootDomain })
 	w.page(rw, r, "证书", "/certificates", "certificates", map[string]any{"Certs": rows})
@@ -286,13 +282,15 @@ func (w *Web) handleCertificateCreate(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Web) handleIssue(rw http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := w.srv.Issue(r.Context(), id); err != nil {
+	if _, _, err := w.srv.StartIssue(id, taskTypeIssue); err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	// Return the updated cert row.
-	cert := w.srv.st.State().Certificates[id]
-	writeCertRow(rw, cert)
+	w.renderCertificateRow(rw, id)
+}
+
+func (w *Web) handleCertificateRow(rw http.ResponseWriter, r *http.Request) {
+	w.renderCertificateRow(rw, r.PathValue("id"))
 }
 
 func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {
@@ -301,8 +299,19 @@ func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {
 		writeJSONErr(rw, http.StatusBadGateway, err.Error())
 		return
 	}
+	w.renderCertificateRow(rw, id)
+}
+
+func (w *Web) renderCertificateRow(rw http.ResponseWriter, id string) {
 	cert := w.srv.st.State().Certificates[id]
-	writeCertRow(rw, cert)
+	if cert == nil {
+		writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+		return
+	}
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := w.tmpl.ExecuteTemplate(rw, "certificate-row", makeCertificateRow(cert)); err != nil {
+		w.srv.log.Error("render certificate row failed", "cert_id", id, "err", err)
+	}
 }
 
 // --- credentials ---
@@ -364,24 +373,54 @@ func (w *Web) handleCredentialUpdate(rw http.ResponseWriter, r *http.Request) {
 // --- agents ---
 
 func (w *Web) handleAgents(rw http.ResponseWriter, r *http.Request) {
-	st := w.srv.st.State()
 	type row struct {
-		ID, Name, Addr, Status, StatusLabel, Version, CertExpiresAt string
+		ID, Name, Addr, Status, StatusLabel, Version, Platform, CertExpiresAt string
+		UpdateStatus, UpdateTarget, UpdateError, UpdateHint                   string
+		Versions                                                              []string
+		DefaultVersion                                                        string
 	}
-	rows := []row{}
-	for _, a := range st.Agents {
-		label := map[domain.AgentStatus]string{
-			domain.AgentRegistered: "在线", domain.AgentUnreachable: "不可达",
+	initial := w.srv.st.State()
+	rows := make([]row, 0, len(initial.Agents))
+	for agentID := range initial.Agents {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		versions, versionErr := w.srv.AgentVersions(ctx, agentID)
+		cancel()
+		a := w.srv.st.State().Agents[agentID]
+		if a == nil {
+			continue
+		}
+		statusLabel := map[domain.AgentStatus]string{
+			domain.AgentRegistered: "已注册", domain.AgentUnreachable: "不可达",
 			domain.AgentDisabled: "已禁用", domain.AgentUnregistered: "未注册",
 		}[a.Status]
-		exp := "—"
+		expiresAt := "—"
 		if !a.CertExpiresAt.IsZero() {
-			exp = a.CertExpiresAt.Format("2006-01-02")
+			expiresAt = a.CertExpiresAt.Format("2006-01-02")
 		}
-		rows = append(rows, row{a.ID, a.Name, a.Address + ":" + strconv.Itoa(a.Port),
-			string(a.Status), label, a.Version, exp})
+		defaultVersion := ""
+		if containsString(versions, Version) {
+			defaultVersion = Version
+		} else if len(versions) > 0 {
+			defaultVersion = versions[0]
+		}
+		hint := ""
+		if versionErr != nil {
+			hint = versionErr.Error()
+		}
+		platform := "—"
+		if a.GOOS != "" && a.GOARCH != "" {
+			platform = a.GOOS + "/" + a.GOARCH
+		}
+		rows = append(rows, row{
+			ID: a.ID, Name: a.Name, Addr: a.Address + ":" + strconv.Itoa(a.Port),
+			Status: string(a.Status), StatusLabel: statusLabel, Version: a.Version,
+			Platform: platform, CertExpiresAt: expiresAt,
+			UpdateStatus: string(a.UpdateStatus), UpdateTarget: a.UpdateTargetVersion,
+			UpdateError: a.UpdateError, UpdateHint: hint,
+			Versions: versions, DefaultVersion: defaultVersion,
+		})
 	}
-	w.page(rw, r, "Agent", "/agents", "agents", map[string]any{"Agents": rows})
+	w.page(rw, r, "Agent", "/agents", "agents", map[string]any{"Agents": rows, "ServerVersion": Version})
 }
 
 func (w *Web) handleAgentToken(rw http.ResponseWriter, r *http.Request) {
@@ -394,7 +433,19 @@ func (w *Web) handleAgentToken(rw http.ResponseWriter, r *http.Request) {
 	}
 	_ = agentID
 	cmd := w.srv.AgentInstallCommand(name, token)
-	w.page(rw, r, "Agent", "/agents", "agents", map[string]any{"InstallCommand": cmd})
+	w.page(rw, r, "Agent", "/agents", "agents", map[string]any{"InstallCommand": cmd, "ServerVersion": Version})
+}
+
+func (w *Web) handleAgentUpdate(rw http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := w.srv.StartAgentUpdate(r.PathValue("id"), r.FormValue("version")); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.redirect(rw, r, "/agents")
 }
 
 func (w *Web) handleAgentDelete(rw http.ResponseWriter, r *http.Request) {
@@ -413,10 +464,32 @@ func (w *Web) handleSettings(rw http.ResponseWriter, r *http.Request) {
 			"Builtin": c.Builtin, "Default": c.ID == st.Config.DefaultACMEID,
 		})
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	versions, versionErr := w.srv.ServerVersions(ctx)
+	cancel()
+	update := w.srv.SelfUpdate()
+	updateHint := ""
+	if versionErr != nil {
+		updateHint = versionErr.Error()
+	}
 	w.page(rw, r, "设置", "/settings", "settings", map[string]any{
 		"CAs": cas, "Email": st.Config.ACMEAccountEmail,
 		"RenewDays": st.Config.RenewPreferenceDays, "DNSSleep": st.Config.DNSSleepSeconds,
+		"ServerVersion": Version, "ServerVersions": versions, "UpdateHint": updateHint,
+		"UpdateStatus": string(update.Status), "UpdateTarget": update.Target, "UpdateError": update.Error,
 	})
+}
+
+func (w *Web) handleServerUpdate(rw http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := w.srv.StartSelfUpdate(r.FormValue("version")); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.redirect(rw, r, "/settings")
 }
 
 func (w *Web) handleSettingsSave(rw http.ResponseWriter, r *http.Request) {
@@ -468,27 +541,31 @@ func mustSub(fsys fs.FS, dir string) fs.FS {
 
 func newID() (string, error) { return store.NewID() }
 
-func writeCertRow(rw http.ResponseWriter, cert *domain.Certificate) {
+type certificateRow struct {
+	ID               string
+	RootDomain       string
+	IssueStatus      string
+	IssueStatusLabel string
+	ExpiresAt        string
+	KeyType          string
+	LastError        string
+	Running          bool
+	CanDeploy        bool
+}
+
+func makeCertificateRow(cert *domain.Certificate) certificateRow {
 	label := map[domain.OperationStatus]string{
 		domain.StatusPending: "待签发", domain.StatusRunning: "签发中",
 		domain.StatusSuccess: "已签发", domain.StatusFailed: "失败",
 	}[cert.IssueStatus]
-	exp := "—"
+	expiresAt := "—"
 	if cert.Current != nil {
-		exp = cert.Current.ExpiresAt.Format("2006-01-02")
+		expiresAt = cert.Current.ExpiresAt.Format("2006-01-02")
 	}
-	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// Rendered inline; a dedicated template keeps the partial self-contained.
-	var sb strings.Builder
-	tmplHTML(&sb, `<tr id="cert-`+cert.ID+`"><td><strong>`+template.HTMLEscapeString(cert.RootDomain)+`</strong></td><td><span class="badge `+string(cert.IssueStatus)+`">`+label+`</span>`+spanErr(cert.LastError)+`</td><td>`+exp+`</td><td>`+string(cert.KeyType)+`</td><td><button hx-post="/certificates/`+cert.ID+`/issue" hx-target="#cert-`+cert.ID+`" hx-swap="outerHTML">签发</button> <button hx-post="/certificates/`+cert.ID+`/deploy" hx-target="#cert-`+cert.ID+`" hx-swap="outerHTML">下发</button></td></tr>`)
-	_, _ = rw.Write([]byte(sb.String()))
-}
-
-func spanErr(err string) string {
-	if err == "" {
-		return ""
+	return certificateRow{
+		ID: cert.ID, RootDomain: cert.RootDomain,
+		IssueStatus: string(cert.IssueStatus), IssueStatusLabel: label,
+		ExpiresAt: expiresAt, KeyType: string(cert.KeyType), LastError: cert.LastError,
+		Running: cert.IssueStatus == domain.StatusRunning, CanDeploy: cert.Current != nil,
 	}
-	return `<span class="tooltip" title="` + template.HTMLEscapeString(err) + `">!</span>`
 }
-
-func tmplHTML(w *strings.Builder, s string) { w.WriteString(s) }

@@ -1,6 +1,25 @@
 {{define "settings"}}
 <h1>设置</h1>
 <div class="card">
+  <h2>程序更新</h2>
+  <p>当前 Server 版本：<code>{{.ServerVersion}}</code></p>
+  {{if eq .UpdateStatus "running"}}
+    <p><span class="badge running">正在更新到 {{.UpdateTarget}}</span></p>
+    <p class="muted">更新完成后 Server 会由 systemd 自动重启，请稍后刷新页面。</p>
+  {{else if .ServerVersions}}
+    <form class="row" method="post" action="/settings/update">
+      <select name="version">
+        {{range .ServerVersions}}<option value="{{.}}">{{.}}</option>{{end}}
+      </select>
+      <button type="submit">更新 Server</button>
+    </form>
+  {{else}}
+    <p class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}当前已是最新正式版本。{{end}}</p>
+  {{end}}
+  {{if .UpdateError}}<p class="err">{{.UpdateError}}</p>{{end}}
+</div>
+
+<div class="card">
   <h2>ACME CA</h2>
   <p class="muted">默认 CA 影响之后创建的证书；已有证书继续使用自身绑定的 CA。</p>
   <table>

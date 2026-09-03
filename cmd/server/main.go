@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -29,6 +30,9 @@ func main() {
 	log := newLogger(*logLevel)
 
 	if err := run(context.Background(), *configPath, log); err != nil {
+		if errors.Is(err, server.ErrRestart) {
+			os.Exit(75)
+		}
 		log.Error("server exited", "err", err)
 		os.Exit(1)
 	}
@@ -97,10 +101,10 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 			interval = d
 		}
 	}
-	go srv.Scheduler(ctx, interval, log)
+	go srv.Scheduler(srv.Context(), interval, log)
 
-	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	signalCtx, stopSignals := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
 
 	errs := make(chan error, 2)
 	go func() { errs <- srv.ListenAndServeWeb(web.Handler()) }()
@@ -110,13 +114,25 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 		"web", fmt.Sprintf("%s:%d", cfg.WebListen, cfg.WebPort),
 		"control", fmt.Sprintf("%s:%d", cfg.ControlListen, cfg.ControlPort))
 
+	restart := false
 	select {
-	case <-ctx.Done():
+	case <-signalCtx.Done():
 		log.Info("shutting down")
-		return nil
+	case <-srv.RestartRequests():
+		restart = true
+		log.Info("restarting after update")
 	case err := <-errs:
 		return err
 	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Error("shutdown failed", "err", err)
+	}
+	if restart {
+		return server.ErrRestart
+	}
+	return nil
 }
 
 func newLogger(level string) *slog.Logger {

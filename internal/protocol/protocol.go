@@ -23,6 +23,8 @@ type RegisterRequest struct {
 	Port    int    `json:"port"`
 	CSR     string `json:"csr"` // PEM PKCS#10 CSR; agent keeps its own private key
 	Version string `json:"version"`
+	GOOS    string `json:"goos"`
+	GOARCH  string `json:"goarch"`
 }
 
 // RegisterResponse returns the CA-signed agent identity certificate chain and
@@ -59,6 +61,24 @@ type DeployResponse struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// ---- Agent binary update (server -> agent) ----
+
+// UpdateRequest deliberately contains only a target version. The Agent builds
+// repository URLs, asset names, executable paths and restart behavior itself.
+type UpdateRequest struct {
+	Version string `json:"version"`
+}
+
+// UpdateResponse reports whether the fixed-version update was accepted.
+type UpdateResponse struct {
+	Success        bool   `json:"success"`
+	AgentID        string `json:"agent_id"`
+	CurrentVersion string `json:"current_version"`
+	TargetVersion  string `json:"target_version"`
+	Restarting     bool   `json:"restarting"`
+	Error          string `json:"error,omitempty"`
+}
+
 // ---- Agent health / status ----
 
 // HealthRequest is a GET sent by the server to verify agent connectivity.
@@ -68,6 +88,8 @@ type HealthRequest struct{}
 type HealthResponse struct {
 	AgentID          string `json:"agent_id"`
 	Version          string `json:"version"`
+	GOOS             string `json:"goos"`
+	GOARCH           string `json:"goarch"`
 	UptimeSeconds    int64  `json:"uptime_seconds"`
 	NginxInstalled   bool   `json:"nginx_installed"`
 	NginxConfigValid bool   `json:"nginx_config_valid"`

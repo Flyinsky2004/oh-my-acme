@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -64,12 +65,9 @@ func GenerateKeyAndCSR(name string) (keyPEM []byte, csrPEM []byte, err error) {
 // it is talking to the real server without depending on any third-party CA.
 func Register(ctx context.Context, serverURL, token, agentID, name string, port int, csrPEM []byte, caFingerprint string) (*Registration, error) {
 	req := protocol.RegisterRequest{
-		Token:   token,
-		AgentID: agentID,
-		Name:    name,
-		Port:    port,
-		CSR:     string(csrPEM),
-		Version: Version,
+		Token: token, AgentID: agentID, Name: name, Port: port,
+		CSR: string(csrPEM), Version: Version,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

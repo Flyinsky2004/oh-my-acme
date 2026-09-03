@@ -10,11 +10,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Flyinsky2004/oh-my-acme/internal/acme"
@@ -63,6 +65,10 @@ func shellQuote(value string) string {
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
+// ErrRestart asks main to exit with a non-zero code so systemd's fixed
+// Restart=on-failure policy starts the newly installed binary.
+var ErrRestart = errors.New("restart requested")
+
 // builtinCAs are pre-seeded CA entries; the default is Let's Encrypt
 // Production. Users may add arbitrary RFC 8555 directory URLs (no EAB).
 const (
@@ -83,6 +89,18 @@ type Server struct {
 
 	acmeSvc      *acme.Service
 	serverLeafFP string // SHA-256 of the server's TLS leaf cert (agent pin)
+
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	restartCh   chan struct{}
+	webHTTP     *http.Server
+	controlHTTP *http.Server
+
+	selfUpdateMu     sync.Mutex
+	selfUpdateStatus domain.OperationStatus
+	selfUpdateTarget string
+	selfUpdateError  string
 }
 
 // StartOptions are the dependencies the server needs to boot.
@@ -113,6 +131,7 @@ func New(cfg Config, log *slog.Logger, st *store.Store, ca *pki.CA, clientCert *
 		return nil, err
 	}
 
+	lifecycleCtx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg:          cfg,
 		log:          log,
@@ -123,6 +142,9 @@ func New(cfg Config, log *slog.Logger, st *store.Store, ca *pki.CA, clientCert *
 		clientCert:   clientCert,
 		acmeSvc:      acme.New(log),
 		serverLeafFP: serverIdentity.Fingerprint(),
+		ctx:          lifecycleCtx,
+		cancel:       cancel,
+		restartCh:    make(chan struct{}, 1),
 	}
 	s.ensureDefaults()
 	return s, nil
@@ -133,6 +155,29 @@ func (s *Server) AcmeService() *acme.Service { return s.acmeSvc }
 
 // Store returns the underlying store.
 func (s *Server) Store() *store.Store { return s.st }
+
+// Context is canceled when the server is shutting down or restarting.
+func (s *Server) Context() context.Context { return s.ctx }
+
+// RestartRequests is signaled after a successful self-update.
+func (s *Server) RestartRequests() <-chan struct{} { return s.restartCh }
+
+// RequestRestart asks main to gracefully stop and exit under systemd.
+func (s *Server) RequestRestart() {
+	select {
+	case s.restartCh <- struct{}{}:
+	default:
+	}
+}
+
+// Go starts lifecycle-bound background work tracked for shutdown.
+func (s *Server) Go(fn func(context.Context)) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn(s.ctx)
+	}()
+}
 
 // CircuitToAgent returns the connection timeout for agent pushes.
 func (s *Server) agentDialTimeout() time.Duration {
@@ -146,6 +191,27 @@ func (s *Server) agentDialTimeout() time.Duration {
 // ensureDefaults seeds built-in CAs and fills empty config fields on first run.
 func (s *Server) ensureDefaults() {
 	_ = s.st.WithState(true, func(st *domain.State) error {
+		if st.Tasks == nil {
+			st.Tasks = map[string]*domain.Task{}
+		}
+		interruptedAt := time.Now()
+		for _, task := range st.Tasks {
+			if task.Status == domain.StatusPending || task.Status == domain.StatusRunning {
+				task.Status = domain.StatusFailed
+				task.FinishedAt = interruptedAt
+				task.Error = "interrupted by server restart"
+				if cert := st.Certificates[task.CertID]; cert != nil {
+					cert.IssueStatus = domain.StatusFailed
+					cert.LastError = task.Error
+				}
+			}
+		}
+		for _, cert := range st.Certificates {
+			if cert.IssueStatus == domain.StatusRunning {
+				cert.IssueStatus = domain.StatusFailed
+				cert.LastError = "interrupted by server restart"
+			}
+		}
 		if st.Config.DefaultKeyType == "" {
 			st.Config.DefaultKeyType = "ec-256"
 		}
@@ -193,9 +259,14 @@ func (s *Server) WebTLSConfig() *tls.Config { return nil }
 // ListenAndServeWeb starts the Web UI HTTP server and blocks.
 func (s *Server) ListenAndServeWeb(handler http.Handler) error {
 	addr := net.JoinHostPort(s.cfg.WebListen, fmt.Sprintf("%d", s.cfg.WebPort))
-	srv := &http.Server{Addr: addr, Handler: handler}
+	s.webHTTP = &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
 	s.log.Info("web ui listening", "addr", addr)
-	return srv.ListenAndServe()
+	return s.webHTTP.ListenAndServe()
 }
 
 // ListenAndServeControl starts the mTLS control server and blocks.
@@ -210,12 +281,40 @@ func (s *Server) ListenAndServeControl(handler http.Handler) error {
 		return err
 	}
 	ln = tls.NewListener(ln, tlsCfg)
-	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	s.controlHTTP = &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
 	s.log.Info("control port listening", "addr", addr)
-	return srv.Serve(ln)
+	return s.controlHTTP.Serve(ln)
 }
 
-// Shutdown gracefully stops both servers.
+// Shutdown cancels background work and gracefully stops both HTTP servers.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return ctx.Err()
+	s.cancel()
+	var firstErr error
+	if s.webHTTP != nil {
+		if err := s.webHTTP.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			firstErr = err
+		}
+	}
+	if s.controlHTTP != nil {
+		if err := s.controlHTTP.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		if firstErr == nil {
+			firstErr = ctx.Err()
+		}
+	}
+	return firstErr
 }

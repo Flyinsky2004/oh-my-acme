@@ -18,6 +18,7 @@ label{display:block;margin:.8rem 0;font-size:.9rem;color:#334155}
 input,select,button{padding:.5rem .7rem;border:1px solid #cbd5e1;border-radius:6px;font-size:.9rem}
 input,select{width:100%;max-width:420px}
 button{background:#0f172a;color:#fff;border:none;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
 button.link{background:none;color:#2563eb;border:none}
 .row{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
 .inline{display:inline}

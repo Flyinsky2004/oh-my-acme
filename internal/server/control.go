@@ -102,15 +102,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			t.UsedAt = time.Now()
 		}
 		st.Agents[agentID] = &domain.Agent{
-			ID:            agentID,
-			Name:          name,
-			Address:       srcIP,
-			Port:          req.Port,
-			Status:        domain.AgentRegistered,
-			Version:       req.Version,
-			RegisteredAt:  time.Now(),
-			CertExpiresAt: agentCert.NotAfter,
-			LastSeenAt:    time.Now(),
+			ID: agentID, Name: name, Address: srcIP, Port: req.Port,
+			Status: domain.AgentRegistered, Version: req.Version,
+			GOOS: req.GOOS, GOARCH: req.GOARCH,
+			RegisteredAt: time.Now(), CertExpiresAt: agentCert.NotAfter, LastSeenAt: time.Now(),
 		}
 		return nil
 	})

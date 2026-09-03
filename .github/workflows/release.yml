@@ -73,11 +73,17 @@ jobs:
 
       - name: Add versioned installers and checksums
         run: |
+          test -s dist/oh-my-acme-server_linux_amd64.tar.gz
+          test -s dist/oh-my-acme-server_linux_arm64.tar.gz
+          test -s dist/oh-my-acme-agent_linux_amd64.tar.gz
+          test -s dist/oh-my-acme-agent_linux_arm64.tar.gz
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 4
           cp server/install.sh dist/install-server.sh
           cp agent/install.sh dist/install-agent.sh
           chmod 0755 dist/install-server.sh dist/install-agent.sh
           cd dist
           sha256sum *.tar.gz install-*.sh > checksums.txt
+          test "$(grep -c 'linux_.*\.tar\.gz' checksums.txt)" -eq 4
           cat checksums.txt
 
       - uses: softprops/action-gh-release@v2

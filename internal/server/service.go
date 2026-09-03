@@ -12,6 +12,7 @@ import (
 	"github.com/Flyinsky2004/oh-my-acme/internal/domain"
 	"github.com/Flyinsky2004/oh-my-acme/internal/protocol"
 	"github.com/Flyinsky2004/oh-my-acme/internal/store"
+	"github.com/Flyinsky2004/oh-my-acme/internal/updater"
 )
 
 var errNotFound = errors.New("not found")
@@ -63,73 +64,175 @@ func (s *Server) CreateCertificate(root, credID, caID string, keyType domain.Key
 	return id, nil
 }
 
-// Issue performs an ACME issuance (new private key, new order) and, on
-// success, swaps the current version. It does not deploy.
-func (s *Server) Issue(ctx context.Context, certID string) error {
-	st := s.st.State()
-	cert := st.Certificates[certID]
-	if cert == nil {
-		return errNotFound
-	}
-	ca := st.CAs[cert.ACMEID]
-	cred := st.Credentials[cert.CredentialID]
-	if ca == nil || !ca.Enabled {
-		return fmt.Errorf("acme ca not enabled")
-	}
-	if cred == nil || !cred.Enabled {
-		return fmt.Errorf("cloudflare credential not enabled")
-	}
+const (
+	taskTypeIssue = "issue"
+	taskTypeRenew = "renew"
+)
 
-	s.markIssueStatus(certID, domain.StatusRunning, "")
+type issuePlan struct {
+	TaskID       string
+	TaskType     string
+	CertID       string
+	RootDomain   string
+	SAN          []string
+	Credential   domain.CloudflareCredential
+	ACMEID       string
+	DirectoryURL string
+	AccountEmail string
+	KeyType      domain.KeyType
+	DNSSleepSecs int
+}
 
-	issuer, err := s.issuerFor(cert.ACMEID, ca.DirectoryURL, st.Config.ACMEAccountEmail)
+// StartIssue atomically reserves an issue/renew task and runs it in the Server
+// lifecycle, independent of the browser request that initiated it. A duplicate
+// start is idempotent and returns the existing active task.
+func (s *Server) StartIssue(certID, taskType string) (*domain.Task, bool, error) {
+	if taskType != taskTypeIssue && taskType != taskTypeRenew {
+		return nil, false, fmt.Errorf("unsupported issue task type %q", taskType)
+	}
+	plan, task, started, err := s.claimIssue(certID, taskType)
+	if err != nil || !started {
+		return task, started, err
+	}
+	s.Go(func(parent context.Context) {
+		ctx, cancel := context.WithTimeout(parent, 25*time.Minute)
+		defer cancel()
+		if err := s.runIssue(ctx, plan); err != nil {
+			s.finishIssueFailure(plan, err)
+			return
+		}
+		if plan.TaskType == taskTypeRenew {
+			if err := s.DeployAll(ctx, plan.CertID); err != nil {
+				s.log.Error("auto-deploy after renew failed", "cert_id", plan.CertID, "err", err)
+			}
+		}
+	})
+	return task, true, nil
+}
+
+func (s *Server) claimIssue(certID, taskType string) (issuePlan, *domain.Task, bool, error) {
+	taskID, err := store.NewID()
 	if err != nil {
-		s.markIssueStatus(certID, domain.StatusFailed, err.Error())
+		return issuePlan{}, nil, false, err
+	}
+	var plan issuePlan
+	var result *domain.Task
+	started := false
+	err = s.st.WithState(true, func(st *domain.State) error {
+		if st.Tasks == nil {
+			st.Tasks = map[string]*domain.Task{}
+		}
+		cert := st.Certificates[certID]
+		if cert == nil {
+			return errNotFound
+		}
+		for _, active := range st.Tasks {
+			if active.CertID == certID &&
+				(active.Type == taskTypeIssue || active.Type == taskTypeRenew) &&
+				(active.Status == domain.StatusPending || active.Status == domain.StatusRunning) {
+				copy := *active
+				result = &copy
+				return nil
+			}
+		}
+		ca := st.CAs[cert.ACMEID]
+		cred := st.Credentials[cert.CredentialID]
+		if ca == nil || !ca.Enabled {
+			return fmt.Errorf("acme ca not enabled")
+		}
+		if cred == nil || !cred.Enabled {
+			return fmt.Errorf("cloudflare credential not enabled")
+		}
+		now := time.Now()
+		task := &domain.Task{
+			ID: taskID, Type: taskType, CertID: certID,
+			Status: domain.StatusRunning, CreatedAt: now, StartedAt: now,
+		}
+		st.Tasks[taskID] = task
+		cert.IssueStatus = domain.StatusRunning
+		cert.LastError = ""
+		plan = issuePlan{
+			TaskID: taskID, TaskType: taskType, CertID: certID,
+			RootDomain: cert.RootDomain, SAN: append([]string(nil), cert.SanDomains...),
+			Credential: *cred, ACMEID: cert.ACMEID, DirectoryURL: ca.DirectoryURL,
+			AccountEmail: st.Config.ACMEAccountEmail, KeyType: cert.KeyType,
+			DNSSleepSecs: st.Config.DNSSleepSeconds,
+		}
+		copy := *task
+		result = &copy
+		started = true
+		return nil
+	})
+	return plan, result, started, err
+}
+
+func (s *Server) runIssue(ctx context.Context, plan issuePlan) error {
+	issuer, err := s.issuerFor(plan.ACMEID, plan.DirectoryURL, plan.AccountEmail)
+	if err != nil {
 		return err
 	}
-	res, created, err := issuer.Issue(ctx, acme.IssueOptions{
-		CertID:       certID,
-		RootDomain:   cert.RootDomain,
-		SAN:          cert.SanDomains,
-		Credential:   *cred,
-		DirectoryURL: ca.DirectoryURL,
-		AccountEmail: st.Config.ACMEAccountEmail,
-		KeyType:      cert.KeyType,
-		DNSSleepSecs: st.Config.DNSSleepSeconds,
+	res, _, err := issuer.Issue(ctx, acme.IssueOptions{
+		CertID: plan.CertID, RootDomain: plan.RootDomain, SAN: plan.SAN,
+		Credential: plan.Credential, DirectoryURL: plan.DirectoryURL,
+		AccountEmail: plan.AccountEmail, KeyType: plan.KeyType,
+		DNSSleepSecs: plan.DNSSleepSecs,
 	})
 	if err != nil {
-		s.markIssueStatus(certID, domain.StatusFailed, err.Error())
-		return fmt.Errorf("issue %s: %w", cert.RootDomain, err)
+		return fmt.Errorf("issue %s: %w", plan.RootDomain, err)
 	}
-	// Resolve the account key now that we have an issuer.
-	_ = created // challenge records are cleaned in-process by the ACSM service.
-
 	versionID, err := store.NewID()
 	if err != nil {
 		return err
 	}
 	v := domain.CertificateVersion{ID: versionID, IssuedAt: res.IssuedAt, ExpiresAt: res.ExpiresAt, Serial: res.Serial}
-	v, err = s.st.WriteCertVersion(certID, v, res.CertPEM, res.CAPEM, res.FullchainPEM, res.PrivateKey)
+	v, err = s.st.WriteCertVersion(plan.CertID, v, res.CertPEM, res.CAPEM, res.FullchainPEM, res.PrivateKey)
 	if err != nil {
-		s.markIssueStatus(certID, domain.StatusFailed, err.Error())
 		return err
 	}
-	var old *domain.CertificateVersion
+	var oldID string
 	err = s.st.WithState(true, func(st *domain.State) error {
-		c := st.Certificates[certID]
-		old = c.Current
-		c.Current = &v
-		c.IssueStatus = domain.StatusSuccess
-		c.LastError = ""
-		c.Deploys = map[string]*domain.AgentDeployState{}
+		cert := st.Certificates[plan.CertID]
+		if cert == nil {
+			return errNotFound
+		}
+		if cert.Current != nil {
+			oldID = cert.Current.ID
+		}
+		cert.Current = &v
+		cert.IssueStatus = domain.StatusSuccess
+		cert.LastError = ""
+		cert.Deploys = map[string]*domain.AgentDeployState{}
+		if task := st.Tasks[plan.TaskID]; task != nil {
+			task.Status = domain.StatusSuccess
+			task.FinishedAt = time.Now()
+			task.Error = ""
+		}
 		return nil
 	})
-	if err == nil {
-		if old != nil {
-			_ = s.st.RemoveCertVersion(certID, old.ID)
-		}
+	if err != nil {
+		return err
 	}
-	return err
+	if oldID != "" && oldID != versionID {
+		_ = s.st.RemoveCertVersion(plan.CertID, oldID)
+	}
+	return nil
+}
+
+func (s *Server) finishIssueFailure(plan issuePlan, issueErr error) {
+	message := issueErr.Error()
+	_ = s.st.WithState(true, func(st *domain.State) error {
+		if cert := st.Certificates[plan.CertID]; cert != nil {
+			cert.IssueStatus = domain.StatusFailed
+			cert.LastError = message
+		}
+		if task := st.Tasks[plan.TaskID]; task != nil {
+			task.Status = domain.StatusFailed
+			task.FinishedAt = time.Now()
+			task.Error = message
+		}
+		return nil
+	})
+	s.log.Error("certificate issue failed", "cert_id", plan.CertID, "err", issueErr)
 }
 
 // issuerFor returns an Issuer for a CA, creating and persisting the per-CA ACME
@@ -151,16 +254,6 @@ func (s *Server) issuerFor(caID, dirURL, accountEmail string) (*acme.Issuer, err
 		return nil, err
 	}
 	return acme.NewIssuer(s.log, dirURL, signer)
-}
-
-func (s *Server) markIssueStatus(certID string, status domain.OperationStatus, msg string) {
-	_ = s.st.WithState(true, func(st *domain.State) error {
-		if c := st.Certificates[certID]; c != nil {
-			c.IssueStatus = status
-			c.LastError = msg
-		}
-		return nil
-	})
 }
 
 // --- Deployment ---
@@ -283,6 +376,155 @@ func (s *Server) recordDeploy(certID, agentID string, success bool, versionID, m
 		}
 		return nil
 	})
+}
+
+// AgentVersions refreshes an Agent's live version/platform and returns stable
+// upgrade targets that contain the matching Agent release asset.
+func (s *Server) AgentVersions(ctx context.Context, agentID string) ([]string, error) {
+	_ = s.RefreshAgent(ctx, agentID)
+	agent := s.st.State().Agents[agentID]
+	if agent == nil {
+		return nil, errNotFound
+	}
+	if agent.GOOS == "" || agent.GOARCH == "" {
+		return nil, fmt.Errorf("agent must be manually upgraded once before Web updates are available")
+	}
+	return updater.AvailableFor(ctx, updater.ComponentAgent, agent.Version, agent.GOOS, agent.GOARCH)
+}
+
+// StartAgentUpdate validates the selected target and updates the Agent in a
+// lifecycle-bound background task. The wire request contains only Version.
+func (s *Server) StartAgentUpdate(agentID, targetVersion string) error {
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	versions, err := s.AgentVersions(ctx, agentID)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if !containsString(versions, targetVersion) {
+		return fmt.Errorf("version %q is not an eligible agent upgrade", targetVersion)
+	}
+	if err := s.setAgentUpdateState(agentID, domain.StatusRunning, targetVersion, ""); err != nil {
+		return err
+	}
+	s.Go(func(parent context.Context) {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+		defer cancel()
+		if err := s.updateAgent(ctx, agentID, targetVersion); err != nil {
+			_ = s.setAgentUpdateState(agentID, domain.StatusFailed, targetVersion, err.Error())
+			s.log.Error("agent update failed", "agent_id", agentID, "target", targetVersion, "err", err)
+		}
+	})
+	return nil
+}
+
+func (s *Server) updateAgent(ctx context.Context, agentID, targetVersion string) error {
+	agent := s.st.State().Agents[agentID]
+	if agent == nil {
+		return errNotFound
+	}
+	u := fmt.Sprintf("https://%s:%d%s/update", agent.Address, agent.Port, protocol.AgentAPIPrefix)
+	body, err := encodeJSON(protocol.UpdateRequest{Version: targetVersion})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 4 * time.Minute, Transport: &http.Transport{TLSClientConfig: s.cliTLSCfg}}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send update signal: %w", err)
+	}
+	defer resp.Body.Close()
+	var result protocol.UpdateResponse
+	if err := decodeJSON(resp.Body, &result); err != nil {
+		return err
+	}
+	if !result.Success {
+		return fmt.Errorf("agent rejected update: %s", result.Error)
+	}
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+		if err := s.RefreshAgent(ctx, agentID); err != nil {
+			continue
+		}
+		current := s.st.State().Agents[agentID]
+		if current != nil && current.Version == targetVersion {
+			return s.setAgentUpdateState(agentID, domain.StatusSuccess, targetVersion, "")
+		}
+	}
+	return fmt.Errorf("agent did not restart on %s before timeout", targetVersion)
+}
+
+// RefreshAgent calls the fixed health endpoint and records the actual running
+// version/platform reported by the Agent binary.
+func (s *Server) RefreshAgent(ctx context.Context, agentID string) error {
+	agent := s.st.State().Agents[agentID]
+	if agent == nil {
+		return errNotFound
+	}
+	u := fmt.Sprintf("https://%s:%d%s/health", agent.Address, agent.Port, protocol.AgentAPIPrefix)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: s.agentDialTimeout(), Transport: &http.Transport{TLSClientConfig: s.cliTLSCfg}}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var health protocol.HealthResponse
+	if err := decodeJSON(resp.Body, &health); err != nil {
+		return err
+	}
+	if health.AgentID != agentID {
+		return fmt.Errorf("agent identity mismatch")
+	}
+	return s.st.WithState(true, func(st *domain.State) error {
+		current := st.Agents[agentID]
+		if current == nil {
+			return errNotFound
+		}
+		current.Version = health.Version
+		current.GOOS = health.GOOS
+		current.GOARCH = health.GOARCH
+		current.Status = domain.AgentRegistered
+		current.LastSeenAt = time.Now()
+		current.LastError = ""
+		return nil
+	})
+}
+
+func (s *Server) setAgentUpdateState(agentID string, status domain.OperationStatus, target, message string) error {
+	return s.st.WithState(true, func(st *domain.State) error {
+		agent := st.Agents[agentID]
+		if agent == nil {
+			return errNotFound
+		}
+		agent.UpdateStatus = status
+		agent.UpdateTargetVersion = target
+		agent.UpdateError = message
+		return nil
+	})
+}
+
+func containsString(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Helpers ---

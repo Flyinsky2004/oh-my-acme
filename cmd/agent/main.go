@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -33,6 +34,9 @@ func main() {
 	log := newLogger(*logLevel)
 
 	if err := run(context.Background(), *configPath, log); err != nil {
+		if errors.Is(err, agent.ErrRestart) {
+			os.Exit(75)
+		}
 		log.Error("agent exited", "err", err)
 		os.Exit(1)
 	}
@@ -86,15 +90,25 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	restart := false
 	select {
 	case s := <-sigCh:
 		log.Info("shutting down", "signal", s.String())
-		shutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutCtx)
+	case <-a.RestartRequests():
+		restart = true
+		log.Info("restarting after update")
 	case err := <-errCh:
 		return err
 	}
+	shutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		return err
+	}
+	if restart {
+		return agent.ErrRestart
+	}
+	return nil
 }
 
 // register performs the one-time registration: generate key+CSR, call the

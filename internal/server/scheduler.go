@@ -39,13 +39,9 @@ func (s *Server) checkRenewals(ctx context.Context) {
 		if !inRenewWindow(cert, st.Config.RenewPreferenceDays) {
 			continue
 		}
-		s.log.Info("auto-renewing certificate", "cert_id", id, "domain", cert.RootDomain)
-		if err := s.Issue(ctx, id); err != nil {
-			s.log.Error("auto-renew failed", "cert_id", id, "err", err)
-			continue
-		}
-		if err := s.DeployAll(ctx, id); err != nil {
-			s.log.Error("auto-deploy after renew failed", "cert_id", id, "err", err)
+		s.log.Info("scheduling certificate renewal", "cert_id", id, "domain", cert.RootDomain)
+		if _, _, err := s.StartIssue(id, taskTypeRenew); err != nil {
+			s.log.Error("schedule auto-renew failed", "cert_id", id, "err", err)
 		}
 	}
 }

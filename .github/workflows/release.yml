@@ -1,0 +1,90 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+          - goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.0"
+
+      - name: Build server
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w -X github.com/Flyinsky2004/oh-my-acme/internal/server.Version=${VERSION}" \
+            -o dist/oh-my-acme-server ./cmd/server
+
+      - name: Build agent
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+        run: |
+          go build -trimpath -ldflags="-s -w -X github.com/Flyinsky2004/oh-my-acme/internal/agent.Version=${VERSION}" \
+            -o dist/oh-my-acme-agent ./cmd/agent
+
+      - name: Package tarballs
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          cd dist
+          tar -czf oh-my-acme-server_linux_${GOARCH}.tar.gz oh-my-acme-server
+          tar -czf oh-my-acme-agent_linux_${GOARCH}.tar.gz oh-my-acme-agent
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Add versioned installers and checksums
+        run: |
+          cp server/install.sh dist/install-server.sh
+          cp agent/install.sh dist/install-agent.sh
+          chmod 0755 dist/install-server.sh dist/install-agent.sh
+          cd dist
+          sha256sum *.tar.gz install-*.sh > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          files: |
+            dist/*.tar.gz
+            dist/install-server.sh
+            dist/install-agent.sh
+            dist/checksums.txt

@@ -1,0 +1,29 @@
+{{define "dashboard"}}
+<h1>概览</h1>
+<div class="stats">
+  <a class="stat card" href="/certificates">
+    <span class="num">{{.Stats.Certs}}</span><span>证书</span>
+  </a>
+  <a class="stat card" href="/certificates">
+    <span class="num">{{.Stats.Issued}}</span><span>已签发</span>
+  </a>
+  <a class="stat card" href="/agents">
+    <span class="num">{{.Stats.Agents}}</span><span>Agent</span>
+  </a>
+  <a class="stat card" href="/credentials">
+    <span class="num">{{.Stats.Credentials}}</span><span>凭据</span>
+  </a>
+</div>
+
+<h2>近期失败</h2>
+{{if .Failures}}
+<table>
+  <thead><tr><th>域名</th><th>类型</th><th>时间</th><th>错误</th></tr></thead>
+  <tbody>
+  {{range .Failures}}
+    <tr><td>{{.Domain}}</td><td>{{.Kind}}</td><td>{{.When}}</td><td class="err">{{.Message}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}<p class="muted">暂无失败记录。</p>{{end}}
+{{end}}

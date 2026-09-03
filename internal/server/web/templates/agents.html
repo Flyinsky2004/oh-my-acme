@@ -1,0 +1,33 @@
+{{define "agents"}}
+<h1>Agent</h1>
+<form class="row" method="post" action="/agents/token">
+  <input name="name" placeholder="Agent 名称" required>
+  <button type="submit">生成安装命令</button>
+</form>
+
+{{if .InstallCommand}}
+<div class="card">
+  <h2>安装命令</h2>
+  <p class="muted">一次性 Token 有效 10 分钟；Agent 会主动上报自己的 IP 与端口。</p>
+  <pre><code>{{.InstallCommand}}</code></pre>
+</div>
+{{end}}
+
+<table>
+  <thead><tr><th>名称</th><th>地址</th><th>状态</th><th>版本</th><th>证书到期</th><th>操作</th></tr></thead>
+  <tbody>
+  {{range .Agents}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><code>{{.Address}}:{{.Port}}</code></td>
+      <td><span class="badge {{.Status}}">{{.StatusLabel}}</span></td>
+      <td>{{.Version}}</td>
+      <td>{{.CertExpiresAt}}</td>
+      <td><button hx-post="/agents/{{.ID}}/delete" hx-confirm="删除该 Agent？">删除</button></td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="muted">暂无 Agent。</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

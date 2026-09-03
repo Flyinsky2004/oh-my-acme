@@ -1,0 +1,26 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · oh-my-acme</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <span class="brand">oh-my-acme</span>
+  <nav>
+    <a href="/" class="{{if eq .Path "/"}}active{{end}}">概览</a>
+    <a href="/certificates" class="{{if eq .Path "/certificates"}}active{{end}}">证书</a>
+    <a href="/credentials" class="{{if eq .Path "/credentials"}}active{{end}}">凭据</a>
+    <a href="/agents" class="{{if eq .Path "/agents"}}active{{end}}">Agent</a>
+    <a href="/settings" class="{{if eq .Path "/settings"}}active{{end}}">设置</a>
+  </nav>
+  <form method="post" action="/logout" class="inline"><button class="link">退出</button></form>
+</header>
+<main class="container">
+{{.Content}}
+</main>
+</body>
+</html>{{end}}

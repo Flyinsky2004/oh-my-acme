@@ -1,0 +1,35 @@
+{{define "settings"}}
+<h1>设置</h1>
+<div class="card">
+  <h2>ACME CA</h2>
+  <p class="muted">默认 CA 影响之后创建的证书；已有证书继续使用自身绑定的 CA。</p>
+  <table>
+    <thead><tr><th>名称</th><th>Directory URL</th><th>类型</th><th>默认</th></tr></thead>
+    <tbody>
+    {{range .CAs}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td><code>{{.DirectoryURL}}</code></td>
+        <td>{{if .Builtin}}内置{{else}}自定义{{end}}</td>
+        <td>{{if .Default}}✓{{else}}<form class="inline" method="post" action="/settings/ca/{{.ID}}/default"><button class="link" type="submit">设为默认</button></form>{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  <form class="row" method="post" action="/settings/ca">
+    <input name="name" placeholder="名称" required>
+    <input name="directory_url" placeholder="https://acme.example.com/directory" required>
+    <button type="submit">添加自定义 CA</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>账户与系统</h2>
+  <form method="post" action="/settings">
+    <label>ACME 账户邮箱 <input name="email" type="email" value="{{.Email}}"></label>
+    <label>续期提前天数 <input name="renew_days" type="number" min="1" max="90" value="{{.RenewDays}}"></label>
+    <label>DNS 传播等待（秒，0=自动检测）<input name="dns_sleep" type="number" min="0" value="{{.DNSSleep}}"></label>
+    <button type="submit">保存</button>
+  </form>
+</div>
+{{end}}

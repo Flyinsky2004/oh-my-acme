@@ -1,0 +1,10 @@
+{
+  "web_listen": "127.0.0.1",
+  "web_port": 8080,
+  "control_listen": "127.0.0.1",
+  "control_port": 9444,
+  "data_dir": ".oh-my-acme-server/data",
+  "pki_dir": ".oh-my-acme-server/pki",
+  "log_dir": ".oh-my-acme-server/logs",
+  "log_level": "debug"
+}

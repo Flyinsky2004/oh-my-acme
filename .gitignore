@@ -1,0 +1,31 @@
+# Local tooling / session state
+.omc/
+
+# Build artifactsv
+bin/
+dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Local runtime data, config, private keys, credentials — never commit
+.oh-my-acme-server/
+.oh-my-acme-agent/
+*.pem
+*.crt
+*.key
+config.json
+data/
+logs/
+
+# Environment & secrets
+.env
+.env.*
+*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

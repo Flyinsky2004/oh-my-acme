@@ -1,0 +1,33 @@
+{{define "certnew"}}
+<h1>新建证书</h1>
+<form class="card" method="post" action="/certificates">
+  <label>根域名
+    <input name="root" placeholder="example.com" required>
+    <span class="hint">自动包含 example.com + *.example.com</span>
+  </label>
+  <label>Cloudflare 凭据
+    <select name="credential_id" required>
+      {{range .Credentials}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label>ACME CA
+    <select name="acme_id">
+      {{range .CAs}}<option value="{{.ID}}" {{if .Default}}selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label>私钥算法
+    <select name="key_type">
+      <option value="ec-256">EC-256（默认）</option>
+      <option value="ec-384">EC-384</option>
+      <option value="rsa-2048">RSA-2048</option>
+      <option value="rsa-4096">RSA-4096</option>
+    </select>
+  </label>
+  <label>目标 Agent
+    <select name="agents" multiple>
+      {{range .Agents}}<option value="{{.ID}}">{{.Name}} ({{.Address}})</option>{{end}}
+    </select>
+  </label>
+  <button type="submit">保存</button>
+</form>
+{{end}}

@@ -1,0 +1,28 @@
+{{define "certificates"}}
+<h1>证书</h1>
+<p class="muted"><a href="/certificates/new">+ 新建证书</a></p>
+
+<table>
+  <thead><tr><th>域名</th><th>状态</th><th>到期时间</th><th>私钥算法</th><th>操作</th></tr></thead>
+  <tbody>
+  {{range .Certs}}
+    <tr id="cert-{{.ID}}">
+      <td><strong>{{.RootDomain}}</strong></td>
+      <td>
+        <span class="badge {{.IssueStatus}}">{{.IssueStatusLabel}}</span>
+        {{if .LastError}}<span class="tooltip" title="{{.LastError}}">!</span>{{end}}
+      </td>
+      <td>{{.ExpiresAt}}</td>
+      <td>{{.KeyType}}</td>
+      <td>
+        <button hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">签发</button>
+        <button hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">下发</button>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="muted">暂无证书。</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+{{end}}

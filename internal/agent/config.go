@@ -3,7 +3,7 @@
 // The agent writes PEM files into a fixed directory and, if nginx is present
 // and already configured to reference those paths, runs a validation +
 // reload. It executes no arbitrary commands: the only programs ever launched
-// are a hard-coded nginx "-t" and "systemctl reload nginx".
+// are a hard-coded nginx "-t" and "systemctl restart nginx".
 package agent
 
 import (

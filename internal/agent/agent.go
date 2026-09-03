@@ -3,7 +3,7 @@
 // The agent writes PEM files into a fixed directory and, if nginx is present
 // and already configured to reference those paths, runs a validation +
 // reload. It executes no arbitrary commands: the only programs ever launched
-// are a hard-coded nginx "-t" and "systemctl reload nginx".
+// are a hard-coded nginx "-t" and "systemctl restart nginx".
 package agent
 
 import (
@@ -256,11 +256,12 @@ func (a *Agent) checkNginx(r *http.Request) error {
 	return a.run(r, a.nginxPath, []string{"-t"})
 }
 
-// reloadNginx runs the hard-coded <systemctl> reload nginx, falling back to
-// <nginx> -s reload when systemctl is missing.
+// reloadNginx runs the hard-coded <systemctl> restart nginx, falling back to
+// <nginx> -s reload when systemctl is missing. A restart is used because a
+// config change that alters listening sockets is not picked up by a reload.
 func (a *Agent) reloadNginx(r *http.Request) error {
 	if a.systemctlPath != "" {
-		if err := a.run(r, a.systemctlPath, []string{"reload", "nginx"}); err == nil {
+		if err := a.run(r, a.systemctlPath, []string{"restart", "nginx"}); err == nil {
 			return nil
 		}
 	}

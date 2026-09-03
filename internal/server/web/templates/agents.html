@@ -1,50 +1,89 @@
 {{define "agents"}}
-<h1>Agent</h1>
-<p class="muted">当前 Server 版本：<code>{{.ServerVersion}}</code></p>
-<form class="row" method="post" action="/agents/token">
-  <input name="name" placeholder="Agent 名称" required>
-  <button type="submit">生成安装命令</button>
-</form>
+<header class="page-header">
+  <div>
+    <p class="page-eyebrow">部署节点</p>
+    <h1>Agent</h1>
+    <p class="page-description">生成一次性安装命令，并管理已注册 Agent 的版本与证书到期状态。</p>
+  </div>
+  <p class="version-line">当前 Server 版本：<code>{{.ServerVersion}}</code></p>
+</header>
 
-{{if .InstallCommand}}
-<div class="card">
-  <h2>安装命令</h2>
-  <p class="muted">一次性 Token 有效 10 分钟；Agent 会主动上报自己的 IP 与端口。</p>
-  <pre><code>{{.InstallCommand}}</code></pre>
-</div>
-{{end}}
+<div class="section-stack">
+  <form class="glass-panel compact-form" method="post" action="/agents/token">
+    <div class="field">
+      <label class="field-label" for="agent-name">Agent 名称</label>
+      <input id="agent-name" name="name" required>
+    </div>
+    <button type="submit">生成安装命令</button>
+  </form>
 
-<table>
-  <thead><tr><th>名称</th><th>地址</th><th>状态</th><th>版本/平台</th><th>证书到期</th><th>更新</th><th>操作</th></tr></thead>
-  <tbody>
-  {{range .Agents}}
-    <tr>
-      <td>{{.Name}}</td>
-      <td><code>{{.Addr}}</code></td>
-      <td><span class="badge {{.Status}}">{{.StatusLabel}}</span></td>
-      <td><code>{{.Version}}</code><br><span class="muted">{{.Platform}}</span></td>
-      <td>{{.CertExpiresAt}}</td>
-      <td>
-        {{if eq .UpdateStatus "running"}}
-          <span class="badge running">正在更新到 {{.UpdateTarget}}</span>
-        {{else if .Versions}}
-          <form class="row" method="post" action="/agents/{{.ID}}/update">
-            {{$default := .DefaultVersion}}
-            <select name="version">
-              {{range .Versions}}<option value="{{.}}" {{if eq . $default}}selected{{end}}>{{.}}</option>{{end}}
-            </select>
-            <button type="submit">更新</button>
-          </form>
-        {{else}}
-          <span class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}已是最新{{end}}</span>
-        {{end}}
-        {{if .UpdateError}}<div class="err">{{.UpdateError}}</div>{{end}}
-      </td>
-      <td><button hx-post="/agents/{{.ID}}/delete" hx-confirm="删除该 Agent？">删除</button></td>
-    </tr>
-  {{else}}
-    <tr><td colspan="7" class="muted">暂无 Agent。</td></tr>
+  {{if .InstallCommand}}
+  <section class="glass-panel" aria-labelledby="install-command-title">
+    <div class="panel-header">
+      <div>
+        <h2 id="install-command-title">安装命令</h2>
+        <p class="muted">一次性 Token 有效 10 分钟；Agent 会主动上报自己的 IP 与端口。</p>
+      </div>
+    </div>
+    <pre><code>{{.InstallCommand}}</code></pre>
+  </section>
   {{end}}
-  </tbody>
-</table>
+
+  {{if .Agents}}
+  <div class="table-shell">
+    <div class="table-scroll" role="region" tabindex="0" aria-label="Agent 列表">
+      <table>
+        <caption class="sr-only">已注册 Agent</caption>
+        <thead>
+          <tr>
+            <th scope="col">名称</th>
+            <th scope="col">地址</th>
+            <th scope="col">状态</th>
+            <th scope="col">版本/平台</th>
+            <th scope="col">证书到期</th>
+            <th scope="col">更新</th>
+            <th scope="col">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .Agents}}
+          <tr>
+            <td class="cell-primary">{{.Name}}</td>
+            <td><code>{{.Addr}}</code></td>
+            <td><span class="badge {{.Status}}">{{.StatusLabel}}</span></td>
+            <td>
+              <div class="stack-meta">
+                <code>{{.Version}}</code>
+                <span class="muted">{{.Platform}}</span>
+              </div>
+            </td>
+            <td>{{.CertExpiresAt}}</td>
+            <td>
+              {{if eq .UpdateStatus "running"}}
+                <span class="badge running">正在更新到 {{.UpdateTarget}}</span>
+              {{else if .Versions}}
+                <form class="table-form" method="post" action="/agents/{{.ID}}/update">
+                  {{$default := .DefaultVersion}}
+                  <label class="sr-only" for="agent-version-{{.ID}}">目标版本</label>
+                  <select id="agent-version-{{.ID}}" name="version">
+                    {{range .Versions}}<option value="{{.}}" {{if eq . $default}}selected{{end}}>{{.}}</option>{{end}}
+                  </select>
+                  <button type="submit">更新</button>
+                </form>
+              {{else}}
+                <span class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}已是最新{{end}}</span>
+              {{end}}
+              {{if .UpdateError}}<div class="err" role="alert">{{.UpdateError}}</div>{{end}}
+            </td>
+            <td><button class="button-danger" type="button" hx-post="/agents/{{.ID}}/delete" hx-confirm="删除该 Agent？">删除</button></td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {{else}}
+  <div class="glass-panel empty-state"><div class="empty-state-inner"><span class="empty-icon">{{template "icon-agents"}}</span><h2>还没有 Agent</h2><p>生成安装命令后，在目标服务器执行即可完成注册。</p></div></div>
+  {{end}}
+</div>
 {{end}}

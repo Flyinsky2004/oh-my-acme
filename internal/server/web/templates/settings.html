@@ -1,54 +1,113 @@
 {{define "settings"}}
-<h1>设置</h1>
-<div class="card">
-  <h2>程序更新</h2>
-  <p>当前 Server 版本：<code>{{.ServerVersion}}</code></p>
-  {{if eq .UpdateStatus "running"}}
-    <p><span class="badge running">正在更新到 {{.UpdateTarget}}</span></p>
-    <p class="muted">更新完成后 Server 会由 systemd 自动重启，请稍后刷新页面。</p>
-  {{else if .ServerVersions}}
-    <form class="row" method="post" action="/settings/update">
-      <select name="version">
-        {{range .ServerVersions}}<option value="{{.}}">{{.}}</option>{{end}}
-      </select>
-      <button type="submit">更新 Server</button>
-    </form>
-  {{else}}
-    <p class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}当前已是最新正式版本。{{end}}</p>
-  {{end}}
-  {{if .UpdateError}}<p class="err">{{.UpdateError}}</p>{{end}}
-</div>
+<header class="page-header">
+  <div>
+    <p class="page-eyebrow">系统配置</p>
+    <h1>设置</h1>
+    <p class="page-description">管理 Server 版本、ACME 签发机构和账户参数。</p>
+  </div>
+</header>
 
-<div class="card">
-  <h2>ACME CA</h2>
-  <p class="muted">默认 CA 影响之后创建的证书；已有证书继续使用自身绑定的 CA。</p>
-  <table>
-    <thead><tr><th>名称</th><th>Directory URL</th><th>类型</th><th>默认</th></tr></thead>
-    <tbody>
-    {{range .CAs}}
-      <tr>
-        <td>{{.Name}}</td>
-        <td><code>{{.DirectoryURL}}</code></td>
-        <td>{{if .Builtin}}内置{{else}}自定义{{end}}</td>
-        <td>{{if .Default}}✓{{else}}<form class="inline" method="post" action="/settings/ca/{{.ID}}/default"><button class="link" type="submit">设为默认</button></form>{{end}}</td>
-      </tr>
+<div class="section-stack">
+  <section class="glass-panel" aria-labelledby="update-title">
+    <div class="panel-header">
+      <div>
+        <h2 id="update-title">程序更新</h2>
+        <p class="version-line">当前 Server 版本：<code>{{.ServerVersion}}</code></p>
+      </div>
+    </div>
+    {{if eq .UpdateStatus "running"}}
+      <p><span class="badge running">正在更新到 {{.UpdateTarget}}</span></p>
+      <p class="muted">更新完成后 Server 会由 systemd 自动重启，请稍后刷新页面。</p>
+    {{else if .ServerVersions}}
+      <form class="compact-form" method="post" action="/settings/update">
+        <div class="field">
+          <label class="field-label" for="server-version">目标版本</label>
+          <select id="server-version" name="version">
+            {{range .ServerVersions}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+        </div>
+        <button type="submit">更新 Server</button>
+      </form>
+    {{else}}
+      <p class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}当前已是最新正式版本。{{end}}</p>
     {{end}}
-    </tbody>
-  </table>
-  <form class="row" method="post" action="/settings/ca">
-    <input name="name" placeholder="名称" required>
-    <input name="directory_url" placeholder="https://acme.example.com/directory" required>
-    <button type="submit">添加自定义 CA</button>
-  </form>
-</div>
+    {{if .UpdateError}}<p class="error-message" role="alert">{{template "icon-alert"}}<span>{{.UpdateError}}</span></p>{{end}}
+  </section>
 
-<div class="card">
-  <h2>账户与系统</h2>
-  <form method="post" action="/settings">
-    <label>ACME 账户邮箱 <input name="email" type="email" value="{{.Email}}"></label>
-    <label>续期提前天数 <input name="renew_days" type="number" min="1" max="90" value="{{.RenewDays}}"></label>
-    <label>DNS 传播等待（秒，0=自动检测）<input name="dns_sleep" type="number" min="0" value="{{.DNSSleep}}"></label>
-    <button type="submit">保存</button>
-  </form>
+  <section class="glass-panel" aria-labelledby="ca-title">
+    <div class="panel-header">
+      <div>
+        <h2 id="ca-title">ACME CA</h2>
+        <p class="muted">默认 CA 影响之后创建的证书；已有证书继续使用自身绑定的 CA。</p>
+      </div>
+    </div>
+    <div class="table-scroll" role="region" tabindex="0" aria-label="ACME CA 列表">
+      <table>
+        <caption class="sr-only">已配置的 ACME CA</caption>
+        <thead>
+          <tr>
+            <th scope="col">名称</th>
+            <th scope="col">Directory URL</th>
+            <th scope="col">类型</th>
+            <th scope="col">默认</th>
+          </tr>
+        </thead>
+        <tbody>
+        {{range .CAs}}
+          <tr>
+            <td class="cell-primary">{{.Name}}</td>
+            <td><code>{{.DirectoryURL}}</code></td>
+            <td>{{if .Builtin}}内置{{else}}自定义{{end}}</td>
+            <td>
+              {{if .Default}}
+                <span class="badge success">默认</span>
+              {{else}}
+                <form class="inline" method="post" action="/settings/ca/{{.ID}}/default"><button class="button-secondary" type="submit">设为默认</button></form>
+              {{end}}
+            </td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+    <form class="ca-add-form" method="post" action="/settings/ca">
+      <div class="field">
+        <label class="field-label" for="ca-name">名称</label>
+        <input id="ca-name" name="name" required>
+      </div>
+      <div class="field">
+        <label class="field-label" for="directory-url">Directory URL</label>
+        <input id="directory-url" name="directory_url" placeholder="https://acme.example.com/directory" required>
+      </div>
+      <button type="submit">添加自定义 CA</button>
+    </form>
+  </section>
+
+  <section class="glass-panel" aria-labelledby="account-title">
+    <div class="panel-header">
+      <div>
+        <h2 id="account-title">账户与系统</h2>
+        <p class="muted">这些参数用于后续签发与自动续期。</p>
+      </div>
+    </div>
+    <form class="section-stack" method="post" action="/settings">
+      <div class="field-grid">
+        <div class="field">
+          <label class="field-label" for="acme-email">ACME 账户邮箱</label>
+          <input id="acme-email" name="email" type="email" value="{{.Email}}">
+        </div>
+        <div class="field">
+          <label class="field-label" for="renew-days">续期提前天数</label>
+          <input id="renew-days" name="renew_days" type="number" min="1" max="90" value="{{.RenewDays}}">
+        </div>
+        <div class="field field-full">
+          <label class="field-label" for="dns-sleep">DNS 传播等待（秒）</label>
+          <input id="dns-sleep" name="dns_sleep" type="number" min="0" value="{{.DNSSleep}}" aria-describedby="dns-sleep-hint">
+          <span class="hint" id="dns-sleep-hint">填写 0 时由系统自动检测。</span>
+        </div>
+      </div>
+      <div class="form-actions"><button type="submit">保存</button></div>
+    </form>
+  </section>
 </div>
 {{end}}

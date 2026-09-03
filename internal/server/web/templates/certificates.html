@@ -1,36 +1,41 @@
 {{define "certificate-row"}}
 <tr id="cert-{{.ID}}" {{if .Running}}hx-get="/certificates/{{.ID}}/row" hx-trigger="load delay:5s" hx-target="this" hx-swap="outerHTML"{{end}}>
-  <td><strong>{{.RootDomain}}</strong></td>
+  <td class="cell-primary">{{.RootDomain}}</td>
   <td>
     <span class="badge {{.IssueStatus}}">{{.IssueStatusLabel}}</span>
-    {{if .LastError}}<span class="tooltip" title="{{.LastError}}">!</span>{{end}}
+    {{if .LastError}}<div class="certificate-error" role="alert">{{template "icon-alert"}}<span>{{.LastError}}</span></div>{{end}}
   </td>
   <td>{{.ExpiresAt}}</td>
-  <td>{{.KeyType}}</td>
-  <td>
+  <td><code>{{.KeyType}}</code></td>
+  <td><div class="cell-actions">
     {{if .Running}}
-      <button disabled>签发中</button>
+      <button type="button" disabled>签发中</button>
     {{else}}
-      <button hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">签发</button>
+      <button type="button" hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">签发</button>
     {{end}}
-    <button hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" {{if not .CanDeploy}}disabled{{end}}>下发</button>
-    <a href="/certificates/{{.ID}}/log">日志</a>
-  </td>
+    <button type="button" class="secondary" hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" {{if not .CanDeploy}}disabled{{end}}>下发</button>
+    <a class="button button-ghost" href="/certificates/{{.ID}}/log">日志</a>
+  </div></td>
 </tr>
 {{end}}
 
 {{define "certificates"}}
-<h1>证书</h1>
-<p class="muted"><a href="/certificates/new">+ 新建证书</a></p>
+<header class="page-header">
+  <div><p class="page-eyebrow">证书生命周期</p><h1>证书</h1><p class="page-description">签发通配符证书并将最新版本下发到目标 Agent。</p></div>
+  <a class="button" href="/certificates/new">{{template "icon-plus"}}新建证书</a>
+</header>
 
-<table>
-  <thead><tr><th>域名</th><th>状态</th><th>到期时间</th><th>私钥算法</th><th>操作</th></tr></thead>
-  <tbody>
-  {{range .Certs}}
-    {{template "certificate-row" .}}
-  {{else}}
-    <tr><td colspan="5" class="muted">暂无证书。</td></tr>
-  {{end}}
-  </tbody>
-</table>
+{{if .Certs}}
+<div class="table-shell">
+  <div class="table-scroll" role="region" tabindex="0" aria-label="证书列表">
+    <table>
+      <caption class="sr-only">已配置证书</caption>
+      <thead><tr><th scope="col">域名</th><th scope="col">状态</th><th scope="col">到期时间</th><th scope="col">私钥算法</th><th scope="col">操作</th></tr></thead>
+      <tbody>{{range .Certs}}{{template "certificate-row" .}}{{end}}</tbody>
+    </table>
+  </div>
+</div>
+{{else}}
+<div class="glass-panel empty-state"><div class="empty-state-inner"><span class="empty-icon">{{template "icon-certificate"}}</span><h2>还没有证书</h2><p>新建证书后即可开始签发并下发到 Agent。</p><a class="button" href="/certificates/new">{{template "icon-plus"}}新建证书</a></div></div>
+{{end}}
 {{end}}

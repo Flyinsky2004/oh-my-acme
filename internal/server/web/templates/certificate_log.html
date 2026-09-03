@@ -3,12 +3,17 @@
 {{end}}
 
 {{define "certificate-log"}}
-<div class="row">
-  <h1>{{.RootDomain}} · 最近一次签发日志</h1>
-  <a href="/certificates">返回证书列表</a>
-</div>
-<p class="muted">只保存最近一次签发或续期过程；新任务开始时会覆盖旧日志。</p>
-{{template "certificate-log-content" .}}
+<header class="page-header">
+  <div>
+    <p class="page-eyebrow">签发过程</p>
+    <h1>{{.RootDomain}}</h1>
+    <p class="page-description">只保存最近一次签发或续期过程；新任务开始时会覆盖旧日志。</p>
+  </div>
+  <a class="button button-secondary" href="/certificates">返回证书列表</a>
+</header>
+<section class="glass-panel" aria-label="签发日志">
+  {{template "certificate-log-content" .}}
+</section>
 <script>
 (function () {
   function scrollLog() {

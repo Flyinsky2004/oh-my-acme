@@ -12,7 +12,7 @@
 - 自动 / 手动续期，Agent 下发失败可在 Web UI 手动重试
 - 内部自签 CA 的 mTLS 通信，不依赖任何第三方 CA
 - Server 与 Agent 通过 GitHub Release 的 `install.sh` 安装为 systemd 服务
-- Web UI：Go 模板 + HTMX，单二进制，简体中文
+- Web UI：Go 模板 + HTMX + 已编译 CSS，单二进制，简体中文，完全离线
 
 ## 快速开始（开发）
 
@@ -29,3 +29,15 @@ go run ./cmd/server -config ./server/config.example.json
 支持更新功能的版本可以在 Web UI 中手动检测正式 Release：Server 在“设置”中选择更高版本自更新；Agent 在 Agent 列表中一键更新，Server 只发送目标版本号，Agent 自行从固定 GitHub 仓库下载并校验 SHA-256，不接受远程命令、URL 或路径。
 
 `v0.1.0` 本身没有更新接口，因此从 `v0.1.0` 迁移到第一个支持 Web 更新的版本时，Server 和现有 Agent 都需要最后手动运行一次新版安装脚本。现有 Agent 已有 `config.json` 时只需传 `-version`，不需要重新注册；之后的版本才能通过 Web UI 升级。
+
+## Web UI 样式
+
+部署运行、普通 `go build` 和 GitHub Release 都使用仓库中已提交的 `internal/server/web/static/app.css`，不需要 Node、npm、CDN 或在线字体。只有修改 Tailwind 源文件 `internal/server/web/styles/app.css` 时才需要 Node 22 开发工具：
+
+```bash
+npm ci
+make web-css        # 编译并覆盖已提交的 CSS
+make web-css-check  # 确认已提交 CSS 与源文件一致，不修改工作区
+```
+
+`make build` 不会调用 npm。CI 中的 Web UI workflow 只检查 CSS 产物是否过期，release 工作流仍是纯 Go 构建。

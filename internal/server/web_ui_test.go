@@ -17,7 +17,8 @@ func TestWebTemplatesParse(t *testing.T) {
 	}
 	for _, name := range []string{
 		"layout", "login", "dashboard", "certificates", "certificate-row", "certnew",
-		"credentials", "credform", "agents", "settings", "icon-dashboard",
+		"certificate-log", "certificate-log-content", "credentials", "credform",
+		"agents", "settings", "icon-dashboard",
 	} {
 		if tmpl.Lookup(name) == nil {
 			t.Errorf("template %q is not defined", name)

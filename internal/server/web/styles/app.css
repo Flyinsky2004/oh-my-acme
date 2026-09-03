@@ -381,6 +381,14 @@
     border-radius: 1.15rem;
   }
 
+  .glass-panel .table-scroll {
+    margin-inline: -0.35rem;
+  }
+
+  .glass-panel .terminal {
+    margin: 0;
+  }
+
   .panel-header {
     display: flex;
     align-items: flex-start;
@@ -606,6 +614,15 @@
     max-width: 100%;
     overflow-x: auto;
     overscroll-behavior-inline: contain;
+  }
+
+  .table-scroll:focus-visible {
+    outline-offset: -3px;
+  }
+
+  .stack-meta {
+    display: grid;
+    gap: 0.2rem;
   }
 
   table {

@@ -68,7 +68,7 @@ func deleteRecord(ctx context.Context, cf *cloudflare.Client, recordID, zoneID s
 // DNSSleepSecs > 0 it sleeps that long and returns (acme.sh --dnssleep).
 // Otherwise it polls a public DNS-over-HTTPS JSON worker until the values are
 // visible or the global timeout is reached, matching acme.sh's automatic check.
-func (i *Issuer) waitPropagation(ctx context.Context, opts IssueOptions, expected map[string]string) error {
+func (i *Issuer) waitPropagation(ctx context.Context, opts IssueOptions, expected map[string][]string) error {
 	if len(expected) == 0 {
 		return nil
 	}
@@ -88,16 +88,23 @@ func (i *Issuer) waitPropagation(ctx context.Context, opts IssueOptions, expecte
 	for {
 		attempt++
 		all := true
-		for name, want := range expected {
+		for name, wants := range expected {
 			vals, err := dohLookup(ctx, name)
 			if err != nil {
 				opts.logf("DNS 查询失败 (%s): %v", name, err)
 				all = false
 				break
 			}
-			if !contains(vals, want) {
-				opts.logf("DNS 尚未传播 (%s)，第 %d 次检查", name, attempt)
-				all = false
+			// A wildcard + apex SAN pair share the same _acme-challenge name
+			// but carry different values; every one must be present.
+			for _, want := range wants {
+				if !contains(vals, want) {
+					opts.logf("DNS 尚未传播 (%s)，第 %d 次检查", name, attempt)
+					all = false
+					break
+				}
+			}
+			if !all {
 				break
 			}
 		}
@@ -138,13 +145,24 @@ func dohLookup(ctx context.Context, name string) ([]string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
+	return parseTXTAnswers(out.Answer), nil
+}
+
+// parseTXTAnswers extracts TXT record values from a DoH answer in their raw
+// (unquoted) presentation form. RFC 1035 TXT data is returned by the JSON API
+// wrapped in double quotes, e.g. `"ABC"`; strip them so callers compare against
+// the raw challenge value, and drop anything that is not a TXT record.
+func parseTXTAnswers(answers []struct {
+	Type int    `json:"type"` // 16 == TXT
+	Data string `json:"data"`
+}) []string {
 	var vals []string
-	for _, a := range out.Answer {
+	for _, a := range answers {
 		if a.Type == 16 {
-			vals = append(vals, a.Data)
+			vals = append(vals, strings.Trim(a.Data, `"`))
 		}
 	}
-	return vals, nil
+	return vals
 }
 
 func contains(vals []string, want string) bool {

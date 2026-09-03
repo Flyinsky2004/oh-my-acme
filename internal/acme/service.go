@@ -206,7 +206,7 @@ func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []d
 	// Stage 1: create all TXT records and collect challenges.
 	opts.logf("正在准备 DNS-01 验证")
 	var challenges []*xacme.Challenge
-	var wsValidation = make(map[string]string) // txtName -> expected value
+	var wsValidation = make(map[string][]string) // txtName -> expected values
 	for _, authzURL := range order.AuthzURLs {
 		authz, err := i.client.GetAuthorization(ctx, authzURL)
 		if err != nil {
@@ -231,7 +231,7 @@ func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []d
 			}
 			opts.logf("Cloudflare TXT 记录创建成功: %s", name)
 			created = append(created, rec)
-			wsValidation[name] = value
+			wsValidation[name] = append(wsValidation[name], value)
 			challenges = append(challenges, ch)
 		}
 	}

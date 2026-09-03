@@ -1,33 +1,45 @@
 {{define "certnew"}}
-<h1>新建证书</h1>
-<form class="card" method="post" action="/certificates">
-  <label>根域名
-    <input name="root" placeholder="example.com" required>
-    <span class="hint">自动包含 example.com + *.example.com</span>
-  </label>
-  <label>Cloudflare 凭据
-    <select name="credential_id" required>
-      {{range .Credentials}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-    </select>
-  </label>
-  <label>ACME CA
-    <select name="acme_id">
-      {{range .CAs}}<option value="{{.ID}}" {{if .Default}}selected{{end}}>{{.Name}}</option>{{end}}
-    </select>
-  </label>
-  <label>私钥算法
-    <select name="key_type">
-      <option value="ec-256">EC-256（默认）</option>
-      <option value="ec-384">EC-384</option>
-      <option value="rsa-2048">RSA-2048</option>
-      <option value="rsa-4096">RSA-4096</option>
-    </select>
-  </label>
-  <label>目标 Agent
-    <select name="agents" multiple>
-      {{range .Agents}}<option value="{{.ID}}">{{.Name}} ({{.Address}})</option>{{end}}
-    </select>
-  </label>
-  <button type="submit">保存</button>
+<header class="page-header">
+  <div><p class="page-eyebrow">证书生命周期</p><h1>新建证书</h1><p class="page-description">配置根域名、签发机构与需要接收证书的 Agent。</p></div>
+</header>
+<form class="glass-panel section-stack" method="post" action="/certificates">
+  <div class="field-grid">
+    <div class="field field-full">
+      <label class="field-label" for="root-domain">根域名</label>
+      <input id="root-domain" name="root" placeholder="example.com" aria-describedby="root-domain-hint" required>
+      <span class="hint" id="root-domain-hint">自动包含 example.com 与 *.example.com。</span>
+    </div>
+    <div class="field">
+      <label class="field-label" for="credential-id">Cloudflare 凭据</label>
+      <select id="credential-id" name="credential_id" aria-describedby="credential-hint" required>
+        {{range .Credentials}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+      </select>
+      <span class="hint" id="credential-hint">用于创建 DNS-01 验证记录。</span>
+    </div>
+    <div class="field">
+      <label class="field-label" for="acme-id">ACME CA</label>
+      <select id="acme-id" name="acme_id" aria-describedby="acme-hint">
+        {{range .CAs}}<option value="{{.ID}}" {{if .Default}}selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      <span class="hint" id="acme-hint">选择签发此证书的 ACME 服务。</span>
+    </div>
+    <div class="field">
+      <label class="field-label" for="key-type">私钥算法</label>
+      <select id="key-type" name="key_type">
+        <option value="ec-256">EC-256（默认）</option>
+        <option value="ec-384">EC-384</option>
+        <option value="rsa-2048">RSA-2048</option>
+        <option value="rsa-4096">RSA-4096</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="field-label" for="target-agents">目标 Agent</label>
+      <select id="target-agents" name="agents" multiple aria-describedby="agents-hint">
+        {{range .Agents}}<option value="{{.ID}}">{{.Name}} ({{.Address}})</option>{{end}}
+      </select>
+      <span class="hint" id="agents-hint">可多选；签发成功后可向这些 Agent 下发证书。</span>
+    </div>
+  </div>
+  <div class="form-actions"><a class="button button-secondary" href="/certificates">取消</a><button type="submit">保存证书</button></div>
 </form>
 {{end}}

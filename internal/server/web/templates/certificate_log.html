@@ -1,0 +1,22 @@
+{{define "certificate-log-content"}}
+<pre id="certificate-log" class="terminal" {{if .Running}}hx-get="/certificates/{{.ID}}/log/content" hx-trigger="load delay:5s" hx-target="this" hx-swap="outerHTML"{{end}}>{{if .Log}}{{.Log}}{{else}}暂无签发日志。{{end}}</pre>
+{{end}}
+
+{{define "certificate-log"}}
+<div class="row">
+  <h1>{{.RootDomain}} · 最近一次签发日志</h1>
+  <a href="/certificates">返回证书列表</a>
+</div>
+<p class="muted">只保存最近一次签发或续期过程；新任务开始时会覆盖旧日志。</p>
+{{template "certificate-log-content" .}}
+<script>
+(function () {
+  function scrollLog() {
+    var element = document.getElementById('certificate-log');
+    if (element) element.scrollTop = element.scrollHeight;
+  }
+  scrollLog();
+  document.body.addEventListener('htmx:afterSwap', scrollLog);
+})();
+</script>
+{{end}}

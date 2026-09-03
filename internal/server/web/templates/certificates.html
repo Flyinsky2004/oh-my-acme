@@ -1,5 +1,5 @@
 {{define "certificate-row"}}
-<tr id="cert-{{.ID}}" {{if .Running}}hx-get="/certificates/{{.ID}}/row" hx-trigger="load delay:2s" hx-target="this" hx-swap="outerHTML"{{end}}>
+<tr id="cert-{{.ID}}" {{if .Running}}hx-get="/certificates/{{.ID}}/row" hx-trigger="load delay:5s" hx-target="this" hx-swap="outerHTML"{{end}}>
   <td><strong>{{.RootDomain}}</strong></td>
   <td>
     <span class="badge {{.IssueStatus}}">{{.IssueStatusLabel}}</span>
@@ -14,6 +14,7 @@
       <button hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">签发</button>
     {{end}}
     <button hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" {{if not .CanDeploy}}disabled{{end}}>下发</button>
+    <a href="/certificates/{{.ID}}/log">日志</a>
   </td>
 </tr>
 {{end}}

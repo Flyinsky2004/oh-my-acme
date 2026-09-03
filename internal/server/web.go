@@ -52,6 +52,8 @@ func (w *Web) Handler() http.Handler {
 	mux.Handle("POST /certificates", w.auth(w.handleCertificateCreate))
 	mux.Handle("POST /certificates/{id}/issue", w.auth(w.handleIssue))
 	mux.Handle("GET /certificates/{id}/row", w.auth(w.handleCertificateRow))
+	mux.Handle("GET /certificates/{id}/log", w.auth(w.handleCertificateLog))
+	mux.Handle("GET /certificates/{id}/log/content", w.auth(w.handleCertificateLogContent))
 	mux.Handle("POST /certificates/{id}/deploy", w.auth(w.handleDeploy))
 
 	mux.Handle("GET /credentials", w.auth(w.handleCredentials))
@@ -291,6 +293,42 @@ func (w *Web) handleIssue(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Web) handleCertificateRow(rw http.ResponseWriter, r *http.Request) {
 	w.renderCertificateRow(rw, r.PathValue("id"))
+}
+
+func (w *Web) handleCertificateLog(rw http.ResponseWriter, r *http.Request) {
+	data, ok := w.certificateLogData(rw, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	w.page(rw, r, "签发日志", "/certificates", "certificate-log", data)
+}
+
+func (w *Web) handleCertificateLogContent(rw http.ResponseWriter, r *http.Request) {
+	data, ok := w.certificateLogData(rw, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := w.tmpl.ExecuteTemplate(rw, "certificate-log-content", data); err != nil {
+		w.srv.log.Error("render certificate log failed", "cert_id", r.PathValue("id"), "err", err)
+	}
+}
+
+func (w *Web) certificateLogData(rw http.ResponseWriter, id string) (map[string]any, bool) {
+	cert := w.srv.st.State().Certificates[id]
+	if cert == nil {
+		writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+		return nil, false
+	}
+	logText, err := w.srv.st.ReadCertificateLog(id)
+	if err != nil {
+		writeJSONErr(rw, http.StatusInternalServerError, err.Error())
+		return nil, false
+	}
+	return map[string]any{
+		"ID": id, "RootDomain": cert.RootDomain, "Log": logText,
+		"Running": cert.IssueStatus == domain.StatusRunning,
+	}, true
 }
 
 func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {

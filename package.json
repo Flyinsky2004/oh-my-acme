@@ -1,0 +1,12 @@
+{
+  "name": "oh-my-acme-web-ui",
+  "private": true,
+  "scripts": {
+    "web-css": "tailwindcss -i ./internal/server/web/styles/app.css -o ./internal/server/web/static/app.css --minify",
+    "web-css-watch": "tailwindcss -i ./internal/server/web/styles/app.css -o ./internal/server/web/static/app.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "tailwindcss": "4.3.3"
+  }
+}

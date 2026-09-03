@@ -3,24 +3,37 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>{{.Title}} · oh-my-acme</title>
 <link rel="stylesheet" href="/static/app.css">
-<script src="/static/htmx.min.js"></script>
+<script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
-<header class="topbar">
-  <span class="brand">oh-my-acme</span>
-  <nav>
-    <a href="/" class="{{if eq .Path "/"}}active{{end}}">概览</a>
-    <a href="/certificates" class="{{if eq .Path "/certificates"}}active{{end}}">证书</a>
-    <a href="/credentials" class="{{if eq .Path "/credentials"}}active{{end}}">凭据</a>
-    <a href="/agents" class="{{if eq .Path "/agents"}}active{{end}}">Agent</a>
-    <a href="/settings" class="{{if eq .Path "/settings"}}active{{end}}">设置</a>
-  </nav>
-  <form method="post" action="/logout" class="inline"><button class="link">退出</button></form>
-</header>
-<main class="container">
-{{.Content}}
-</main>
+<a class="skip-link" href="#main-content">跳到主要内容</a>
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="oh-my-acme 首页">
+      <span class="brand-mark">{{template "icon-shield"}}</span>
+      <span class="brand-copy"><span class="brand-name">oh-my-acme</span><span class="brand-tagline">证书管理</span></span>
+    </a>
+    <nav class="sidebar-nav" aria-label="主导航">
+      <ul class="nav-list">
+        <li><a href="/" class="nav-link" {{if eq .Path "/"}}aria-current="page"{{end}}>{{template "icon-dashboard"}}<span>概览</span></a></li>
+        <li><a href="/certificates" class="nav-link" {{if eq .Path "/certificates"}}aria-current="page"{{end}}>{{template "icon-certificate"}}<span>证书</span></a></li>
+        <li><a href="/credentials" class="nav-link" {{if eq .Path "/credentials"}}aria-current="page"{{end}}>{{template "icon-key"}}<span>凭据</span></a></li>
+        <li><a href="/agents" class="nav-link" {{if eq .Path "/agents"}}aria-current="page"{{end}}>{{template "icon-agents"}}<span>Agent</span></a></li>
+        <li><a href="/settings" class="nav-link" {{if eq .Path "/settings"}}aria-current="page"{{end}}>{{template "icon-settings"}}<span>设置</span></a></li>
+      </ul>
+    </nav>
+    <div class="sidebar-footer">
+      <form method="post" action="/logout" class="logout-form">
+        <button class="logout-button" type="submit">{{template "icon-logout"}}<span class="logout-label">退出登录</span></button>
+      </form>
+    </div>
+  </aside>
+  <main class="page-main" id="main-content" tabindex="-1">
+    <div class="page-container">{{.Content}}</div>
+  </main>
+</div>
 </body>
 </html>{{end}}

@@ -1,0 +1,32 @@
+name: Web UI
+
+on:
+  push:
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - "Makefile"
+      - "internal/server/web/**"
+      - ".github/workflows/web-ui.yml"
+  pull_request:
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - "Makefile"
+      - "internal/server/web/**"
+      - ".github/workflows/web-ui.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  css:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: make web-css-check

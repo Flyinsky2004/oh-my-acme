@@ -73,24 +73,36 @@ func (i *Issuer) waitPropagation(ctx context.Context, opts IssueOptions, expecte
 		return nil
 	}
 	if opts.DNSSleepSecs > 0 {
+		opts.logf("固定等待 DNS 传播: %d 秒", opts.DNSSleepSecs)
 		select {
 		case <-time.After(time.Duration(opts.DNSSleepSecs) * time.Second):
+			opts.logf("DNS 固定等待完成")
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+	opts.logf("开始自动检测 DNS 传播")
 	deadline := time.Now().Add(defaultPropagate)
+	attempt := 0
 	for {
+		attempt++
 		all := true
 		for name, want := range expected {
 			vals, err := dohLookup(ctx, name)
-			if err != nil || !contains(vals, want) {
+			if err != nil {
+				opts.logf("DNS 查询失败 (%s): %v", name, err)
+				all = false
+				break
+			}
+			if !contains(vals, want) {
+				opts.logf("DNS 尚未传播 (%s)，第 %d 次检查", name, attempt)
 				all = false
 				break
 			}
 		}
 		if all {
+			opts.logf("DNS 记录已传播")
 			return nil
 		}
 		if time.Now().After(deadline) {

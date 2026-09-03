@@ -3,27 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>登录 · oh-my-acme</title>
+<meta name="color-scheme" content="light dark">
+<title>{{if .Setup}}初始化{{else}}登录{{end}} · oh-my-acme</title>
 <link rel="stylesheet" href="/static/app.css">
-<script src="/static/htmx.min.js"></script>
+<script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
-<main class="auth">
-  <form class="card" method="post" action="{{if .Setup}}/setup{{else}}/login{{end}}">
-    <h1>oh-my-acme</h1>
-    {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
-    {{if .Setup}}
-      <p class="muted">首次初始化，请设置管理员。</p>
-      <label>用户名<input name="username" autocomplete="username" required></label>
-      <label>密码<input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
-      <label>初始化令牌<input name="setup_token" required></label>
-      <button type="submit">初始化</button>
-    {{else}}
-      <label>用户名<input name="username" autocomplete="username" required></label>
-      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
-      <button type="submit">登录</button>
-    {{end}}
-  </form>
+<main class="auth-shell">
+  <section class="auth-panel" aria-labelledby="auth-title">
+    <div class="auth-brand">
+      <span class="brand-mark">{{template "icon-shield"}}</span>
+      <h1 id="auth-title">oh-my-acme</h1>
+      <p>{{if .Setup}}完成首次初始化后开始管理证书{{else}}登录到证书管理控制台{{end}}</p>
+    </div>
+    {{if .Error}}<div class="error-message" role="alert">{{template "icon-alert"}}<span>{{.Error}}</span></div>{{end}}
+    <form class="auth-form" method="post" action="{{if .Setup}}/setup{{else}}/login{{end}}">
+      <div class="field">
+        <label class="field-label" for="username">用户名</label>
+        <input id="username" name="username" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label class="field-label" for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="{{if .Setup}}new-password{{else}}current-password{{end}}" {{if .Setup}}minlength="8" aria-describedby="password-hint"{{end}} required>
+        {{if .Setup}}<span class="hint" id="password-hint">至少 8 个字符。</span>{{end}}
+      </div>
+      {{if .Setup}}
+      <div class="field">
+        <label class="field-label" for="setup-token">初始化令牌</label>
+        <input id="setup-token" name="setup_token" aria-describedby="token-hint" required>
+        <span class="hint" id="token-hint">使用 Server 启动日志中显示的一次性令牌。</span>
+      </div>
+      {{end}}
+      <button type="submit">{{if .Setup}}完成初始化{{else}}登录{{end}}</button>
+    </form>
+  </section>
 </main>
 </body>
 </html>{{end}}

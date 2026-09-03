@@ -1,29 +1,38 @@
 {{define "dashboard"}}
-<h1>概览</h1>
-<div class="stats">
-  <a class="stat card" href="/certificates">
-    <span class="num">{{.Stats.Certs}}</span><span>证书</span>
-  </a>
-  <a class="stat card" href="/certificates">
-    <span class="num">{{.Stats.Issued}}</span><span>已签发</span>
-  </a>
-  <a class="stat card" href="/agents">
-    <span class="num">{{.Stats.Agents}}</span><span>Agent</span>
-  </a>
-  <a class="stat card" href="/credentials">
-    <span class="num">{{.Stats.Credentials}}</span><span>凭据</span>
-  </a>
-</div>
+<header class="page-header">
+  <div>
+    <p class="page-eyebrow">运行概览</p>
+    <h1>概览</h1>
+    <p class="page-description">查看证书、凭据与 Agent 的当前状态。</p>
+  </div>
+  <a class="button" href="/certificates/new">{{template "icon-plus"}}新建证书</a>
+</header>
 
-<h2>近期失败</h2>
-{{if .Failures}}
-<table>
-  <thead><tr><th>域名</th><th>类型</th><th>时间</th><th>错误</th></tr></thead>
-  <tbody>
-  {{range .Failures}}
-    <tr><td>{{.Domain}}</td><td>{{.Kind}}</td><td>{{.When}}</td><td class="err">{{.Message}}</td></tr>
-  {{end}}
-  </tbody>
-</table>
-{{else}}<p class="muted">暂无失败记录。</p>{{end}}
+<div class="section-stack">
+  <section class="stats-grid" aria-label="资源统计">
+    <a class="stat-card" href="/certificates"><span class="stat-label">证书总数{{template "icon-certificate"}}</span><span class="stat-value">{{.Stats.Certs}}</span></a>
+    <a class="stat-card" href="/certificates"><span class="stat-label">已签发{{template "icon-check"}}</span><span class="stat-value">{{.Stats.Issued}}</span></a>
+    <a class="stat-card" href="/agents"><span class="stat-label">Agent{{template "icon-agents"}}</span><span class="stat-value">{{.Stats.Agents}}</span></a>
+    <a class="stat-card" href="/credentials"><span class="stat-label">Cloudflare 凭据{{template "icon-key"}}</span><span class="stat-value">{{.Stats.Credentials}}</span></a>
+  </section>
+
+  <section aria-labelledby="failures-title">
+    <div class="panel-header">
+      <div><h2 id="failures-title">近期失败</h2><p class="muted">需要关注的最近签发错误。</p></div>
+    </div>
+    {{if .Failures}}
+    <div class="table-shell">
+      <div class="table-scroll">
+        <table>
+          <caption class="sr-only">近期证书签发失败记录</caption>
+          <thead><tr><th scope="col">域名</th><th scope="col">类型</th><th scope="col">时间</th><th scope="col">错误</th></tr></thead>
+          <tbody>{{range .Failures}}<tr><td class="cell-primary">{{.Domain}}</td><td>{{.Kind}}</td><td>{{.When}}</td><td class="err">{{.Message}}</td></tr>{{end}}</tbody>
+        </table>
+      </div>
+    </div>
+    {{else}}
+    <div class="glass-panel empty-state"><div class="empty-state-inner"><span class="empty-icon">{{template "icon-check"}}</span><h3>运行状态良好</h3><p>当前没有证书签发失败记录。</p></div></div>
+    {{end}}
+  </section>
+</div>
 {{end}}

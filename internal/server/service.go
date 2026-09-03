@@ -94,6 +94,14 @@ func (s *Server) StartIssue(certID, taskType string) (*domain.Task, bool, error)
 	if err != nil || !started {
 		return task, started, err
 	}
+	if err := s.st.ResetCertificateLog(certID); err != nil {
+		s.finishIssueFailure(plan, err)
+		return task, false, err
+	}
+	s.issueLog(certID, "开始%s证书", map[bool]string{true: "自动续期", false: "签发"}[taskType == taskTypeRenew])
+	s.issueLog(certID, "根域名: %s", plan.RootDomain)
+	s.issueLog(certID, "SAN: %s", strings.Join(plan.SAN, ", "))
+	s.issueLog(certID, "ACME CA: %s", plan.DirectoryURL)
 	s.Go(func(parent context.Context) {
 		ctx, cancel := context.WithTimeout(parent, 25*time.Minute)
 		defer cancel()
@@ -176,10 +184,14 @@ func (s *Server) runIssue(ctx context.Context, plan issuePlan) error {
 		Credential: plan.Credential, DirectoryURL: plan.DirectoryURL,
 		AccountEmail: plan.AccountEmail, KeyType: plan.KeyType,
 		DNSSleepSecs: plan.DNSSleepSecs,
+		Logf: func(format string, args ...any) {
+			s.issueLog(plan.CertID, format, args...)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("issue %s: %w", plan.RootDomain, err)
 	}
+	s.issueLog(plan.CertID, "正在保存证书文件")
 	versionID, err := store.NewID()
 	if err != nil {
 		return err
@@ -215,11 +227,16 @@ func (s *Server) runIssue(ctx context.Context, plan issuePlan) error {
 	if oldID != "" && oldID != versionID {
 		_ = s.st.RemoveCertVersion(plan.CertID, oldID)
 	}
+	s.issueLog(plan.CertID, "证书签发成功")
+	s.issueLog(plan.CertID, "证书到期时间: %s", res.ExpiresAt.Format(time.RFC3339))
+	s.issueLog(plan.CertID, "签发任务完成")
 	return nil
 }
 
 func (s *Server) finishIssueFailure(plan issuePlan, issueErr error) {
 	message := issueErr.Error()
+	s.issueLog(plan.CertID, "ERROR: %s", message)
+	s.issueLog(plan.CertID, "签发任务失败")
 	_ = s.st.WithState(true, func(st *domain.State) error {
 		if cert := st.Certificates[plan.CertID]; cert != nil {
 			cert.IssueStatus = domain.StatusFailed
@@ -233,6 +250,13 @@ func (s *Server) finishIssueFailure(plan issuePlan, issueErr error) {
 		return nil
 	})
 	s.log.Error("certificate issue failed", "cert_id", plan.CertID, "err", issueErr)
+}
+
+func (s *Server) issueLog(certID, format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	if err := s.st.AppendCertificateLog(certID, message); err != nil {
+		s.log.Warn("append certificate log failed", "cert_id", certID, "err", err)
+	}
 }
 
 // issuerFor returns an Issuer for a CA, creating and persisting the per-CA ACME

@@ -74,6 +74,13 @@ type IssueOptions struct {
 	AccountEmail string
 	KeyType      domain.KeyType
 	DNSSleepSecs int
+	Logf         func(format string, args ...any)
+}
+
+func (o IssueOptions) logf(format string, args ...any) {
+	if o.Logf != nil {
+		o.Logf(format, args...)
+	}
 }
 
 // Issuer creates certificates for a single CA directory.
@@ -159,11 +166,14 @@ func (i *Issuer) register(ctx context.Context, email string) error {
 // even if a later step fails).
 func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []dnsRecord, error) {
 	// Register account (idempotent for an existing key).
+	opts.logf("正在注册或加载 ACME 账户")
 	if err := i.register(ctx, opts.AccountEmail); err != nil {
 		return issueResult{}, nil, err
 	}
+	opts.logf("ACME 账户准备完成")
 
 	// New order for all SANs (including wildcard).
+	opts.logf("正在创建 ACME Order")
 	ids := make([]xacme.AuthzID, 0, len(opts.SAN))
 	for _, d := range opts.SAN {
 		ids = append(ids, xacme.AuthzID{Type: "dns", Value: d})
@@ -172,6 +182,7 @@ func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []d
 	if err != nil {
 		return issueResult{}, nil, fmt.Errorf("authorize order: %w", err)
 	}
+	opts.logf("ACME Order 创建成功")
 
 	cfclient := cloudflare.NewClient(option.WithAPIToken(opts.Credential.Token))
 	var created []dnsRecord
@@ -179,14 +190,21 @@ func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []d
 	// ends (success, validation failure, or timeout). On success the caller
 	// still receives the created list for audit; the records are gone.
 	defer func() {
+		if len(created) > 0 {
+			opts.logf("正在清理 Cloudflare TXT 记录")
+		}
 		for _, r := range created {
 			if _, err := deleteRecord(context.Background(), cfclient, r.RecordID, r.ZoneID); err != nil {
 				i.s.log.Warn("failed to remove challenge TXT record", "record_id", r.RecordID, "err", err)
+				opts.logf("TXT 记录清理失败: %v", err)
+				continue
 			}
+			opts.logf("TXT 记录清理成功: %s", r.Name)
 		}
 	}()
 
 	// Stage 1: create all TXT records and collect challenges.
+	opts.logf("正在准备 DNS-01 验证")
 	var challenges []*xacme.Challenge
 	var wsValidation = make(map[string]string) // txtName -> expected value
 	for _, authzURL := range order.AuthzURLs {
@@ -206,10 +224,12 @@ func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []d
 				return issueResult{}, created, err
 			}
 			name := txtName(authz.Identifier.Value)
+			opts.logf("正在创建 Cloudflare TXT 记录: %s", name)
 			rec, err := createRecord(ctx, cfclient, opts.Credential.ZoneID, name, value)
 			if err != nil {
 				return issueResult{}, nil, err
 			}
+			opts.logf("Cloudflare TXT 记录创建成功: %s", name)
 			created = append(created, rec)
 			wsValidation[name] = value
 			challenges = append(challenges, ch)
@@ -227,6 +247,7 @@ func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []d
 	}
 
 	// Stage 3: tell the CA we're ready (accept) then wait for each authorisation.
+	opts.logf("正在通知 ACME CA 开始验证")
 	for _, ch := range challenges {
 		if _, err := i.client.Accept(ctx, ch); err != nil {
 			return issueResult{}, created, err
@@ -239,16 +260,20 @@ func (i *Issuer) Issue(ctx context.Context, opts IssueOptions) (issueResult, []d
 		}
 		_ = authz
 	}
+	opts.logf("域名验证成功")
 
 	// Stage 4: build CSR and finalize.
+	opts.logf("正在生成新的 %s 私钥和 CSR", opts.KeyType)
 	csrDER, privKey, keyType, err := buildCSR(opts.KeyType, opts.SAN)
 	if err != nil {
 		return issueResult{}, created, err
 	}
+	opts.logf("正在请求 ACME CA 签发证书")
 	chain, _, err := i.client.CreateOrderCert(ctx, order.FinalizeURL, csrDER, true)
 	if err != nil {
 		return issueResult{}, created, fmt.Errorf("finalize order: %w", err)
 	}
+	opts.logf("ACME CA 已返回证书")
 
 	// Verify the returned chain, split leaf vs issuer, assemble PEM files.
 	certX509, capem, certPEM, fullchainPEM, err := splitAndMarshalChain(chain)

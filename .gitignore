@@ -1,7 +1,8 @@
 # Local tooling / session state
 .omc/
+node_modules/
 
-# Build artifactsv
+# Build artifacts
 bin/
 dist/
 *.exe

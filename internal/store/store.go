@@ -202,6 +202,55 @@ func (s *Store) WriteCertVersion(certID string, v domain.CertificateVersion, cer
 	return v, nil
 }
 
+// ResetCertificateLog truncates the per-certificate latest issuance log.
+func (s *Store) ResetCertificateLog(certID string) error {
+	if err := validateID(certID); err != nil {
+		return err
+	}
+	dir := filepath.Join(s.dataDir, "certs", certID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return writeFileSync(filepath.Join(dir, "latest.log"), nil, 0o600)
+}
+
+// AppendCertificateLog appends one timestamped line to the latest issuance log.
+func (s *Store) AppendCertificateLog(certID, message string) error {
+	if err := validateID(certID); err != nil {
+		return err
+	}
+	dir := filepath.Join(s.dataDir, "certs", certID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "latest.log")
+	line := fmt.Sprintf("[%s] %s\n", time.Now().Format("15:04:05"), message)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.WriteString(line); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+// ReadCertificateLog returns the most recent issuance log for a certificate.
+func (s *Store) ReadCertificateLog(certID string) (string, error) {
+	if err := validateID(certID); err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(s.dataDir, "certs", certID, "latest.log"))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // RemoveCertVersion deletes the on-disk certificate version directory.
 func (s *Store) RemoveCertVersion(certID, versionID string) error {
 	if err := validateID(versionID); err != nil {

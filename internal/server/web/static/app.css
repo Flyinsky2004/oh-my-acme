@@ -36,3 +36,4 @@ code{background:#f1f5f9;padding:.1rem .3rem;border-radius:4px;font-size:.85rem}
 .auth{display:flex;align-items:center;justify-content:center;min-height:100vh}
 .auth .card{width:360px}
 pre{background:#0f172a;color:#e2e8f0;padding:1rem;border-radius:8px;overflow-x:auto}
+.terminal{min-height:24rem;max-height:65vh;overflow:auto;white-space:pre-wrap;word-break:break-word}

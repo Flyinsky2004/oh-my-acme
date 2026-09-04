@@ -108,7 +108,9 @@ type AgentDeployState struct {
 	Status        OperationStatus `json:"status"`
 	LastAttemptAt time.Time       `json:"last_attempt_at"`
 	LastSuccessAt time.Time       `json:"last_success_at,omitempty"`
+	NginxStatus   string          `json:"nginx_status,omitempty"`
 	Error         string          `json:"error,omitempty"`
+	LastLog       string          `json:"last_log,omitempty"`
 	RetryCount    int             `json:"retry_count"`
 }
 
@@ -126,6 +128,7 @@ type Certificate struct {
 	Current      *CertificateVersion          `json:"current,omitempty"`
 	Deploys      map[string]*AgentDeployState `json:"deploys,omitempty"`
 	IssueStatus  OperationStatus              `json:"issue_status"`
+	DeployStatus OperationStatus              `json:"deploy_status,omitempty"`
 	LastError    string                       `json:"last_error,omitempty"`
 	CreatedAt    time.Time                    `json:"created_at"`
 }

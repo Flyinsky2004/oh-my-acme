@@ -47,6 +47,8 @@ type Agent struct {
 	updateMu  sync.Mutex
 	updateFn  func(context.Context, string) (string, error)
 	restartCh chan struct{}
+
+	deployMu sync.Mutex
 }
 
 // New builds an Agent, resolving the nginx/systemctl paths from a fixed
@@ -168,31 +170,47 @@ func (a *Agent) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+const nginxApplyTimeout = 30 * time.Second
+
 // handleDeploy validates the request, installs the certificate version, and
-// reloads nginx if installed.
+// reloads nginx if installed. Certificate installs on one agent are serialized
+// so two certificates cannot overlap nginx restarts.
 func (a *Agent) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var req protocol.DeployRequest
 	if err := decodeJSON(r, &req); err != nil {
-		writeJSON(w, protocol.DeployResponse{Success: false, NginxStatus: "unknown", Error: "invalid request: " + err.Error()})
+		writeJSON(w, protocol.DeployResponse{Success: false, NginxStatus: "unknown", Error: "invalid request: " + err.Error(), Log: "invalid request: " + err.Error()})
 		return
 	}
 	if !safeDomain.MatchString(req.RootDomain) {
-		writeJSON(w, protocol.DeployResponse{Success: false, NginxStatus: "unknown", Error: "invalid root domain"})
+		writeJSON(w, protocol.DeployResponse{Success: false, NginxStatus: "unknown", Error: "invalid root domain", Log: "invalid root domain"})
 		return
 	}
-	resp := a.deploy(r, req)
+	a.deployMu.Lock()
+	defer a.deployMu.Unlock()
+	resp := a.deploy(req)
 	writeJSON(w, resp)
 }
 
 // deploy installs the certificate, verifying it first, then atomically
 // swapping files and reloading nginx. It returns a never-nil response.
-func (a *Agent) deploy(r *http.Request, req protocol.DeployRequest) protocol.DeployResponse {
-	resp := protocol.DeployResponse{AgentID: a.cfg.AgentID}
+func (a *Agent) deploy(req protocol.DeployRequest) (resp protocol.DeployResponse) {
+	var logBuf strings.Builder
+	logf := func(format string, args ...any) {
+		if logBuf.Len() > 0 {
+			logBuf.WriteByte('\n')
+		}
+		fmt.Fprintf(&logBuf, format, args...)
+	}
+	resp.AgentID = a.cfg.AgentID
+	defer func() {
+		resp.Log = logBuf.String()
+	}()
 
-	// Validate the material before touching any live file.
+	logf("verify certificate %s version %s", req.RootDomain, req.VersionID)
 	if err := verifyCertMaterial(req); err != nil {
 		resp.NginxStatus = "unknown"
 		resp.Error = err.Error()
+		logf("ERROR: %s", err)
 		return resp
 	}
 
@@ -200,53 +218,69 @@ func (a *Agent) deploy(r *http.Request, req protocol.DeployRequest) protocol.Dep
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		resp.NginxStatus = "unknown"
 		resp.Error = "create cert dir: " + err.Error()
+		logf("ERROR: %s", resp.Error)
 		return resp
 	}
 	paths := certPaths(dir)
 
-	// Stage 1: write .new files.
+	logf("write staged files under %s", dir)
 	if err := writeNewFiles(paths, req); err != nil {
 		cleanupStaged(paths)
 		resp.NginxStatus = "unknown"
 		resp.Error = err.Error()
+		logf("ERROR: %s", err)
 		return resp
 	}
 
-	// Stage 2: back up live files, then swap .new into place.
+	logf("swap live certificate files")
 	if err := swapLive(paths); err != nil {
 		rollback(paths)
 		cleanupStaged(paths)
 		resp.NginxStatus = "unknown"
 		resp.Error = err.Error()
+		logf("ERROR: %s", err)
 		return resp
 	}
 
-	// Stage 3: apply the new certs when nginx is installed. Roll back on failure
-	// so a bad certificate never leaves the webserver in a broken state.
 	if a.nginxInstalled {
-		if err := a.reloadNginx(r); err != nil {
-			rollback(paths)
-			cleanupStaged(paths)
+		logf("apply nginx")
+		out, err := a.reloadNginx()
+		if strings.TrimSpace(out) != "" {
+			logf("%s", strings.TrimSpace(out))
+		}
+		if err != nil {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				rollback(paths)
+				cleanupStaged(paths)
+			}
 			resp.NginxStatus = "failed"
 			resp.Error = err.Error()
+			logf("ERROR: %s", err)
 			return resp
 		}
 		resp.NginxStatus = "ok"
+		logf("nginx: ok")
 	} else {
 		resp.NginxStatus = "not-found"
+		logf("nginx: not-found")
 	}
 
 	removeBackups(paths)
 	resp.Success = true
+	logf("deploy success")
 	return resp
 }
 
 // --- Fixed, non-parametrised command execution ---
 
+func (a *Agent) nginxContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), nginxApplyTimeout)
+}
+
 // checkNginx runs the hard-coded <nginx> -t. No value from a request ever
 // reaches argv.
-func (a *Agent) checkNginx(r *http.Request) error {
-	return a.run(r, a.nginxPath, []string{"-t"})
+func (a *Agent) checkNginx(ctx context.Context) (string, error) {
+	return a.run(ctx, a.nginxPath, []string{"-t"})
 }
 
 // reloadNginx applies the freshly swapped certs. When systemctl is present it
@@ -256,21 +290,47 @@ func (a *Agent) checkNginx(r *http.Request) error {
 // this agent's sandboxed systemd unit (ProtectSystem=full / PrivateTmp) and is
 // redundant with the restart. Only the non-systemd fallback tests the config
 // explicitly before <nginx> -s reload.
-func (a *Agent) reloadNginx(r *http.Request) error {
+func (a *Agent) reloadNginx() (string, error) {
 	if a.systemctlPath != "" {
-		return a.run(r, a.systemctlPath, []string{"restart", "nginx"})
+		ctx, cancel := a.nginxContext()
+		defer cancel()
+		out, err := a.run(ctx, a.systemctlPath, []string{"restart", "nginx"})
+		if err != nil && ctx.Err() != nil {
+			return out, fmt.Errorf("nginx restart timed out: %w", ctx.Err())
+		}
+		return out, err
 	}
-	if err := a.checkNginx(r); err != nil {
-		return err
+	testCtx, testCancel := a.nginxContext()
+	out, err := a.checkNginx(testCtx)
+	testCancel()
+	if err != nil {
+		return out, err
 	}
-	return a.run(r, a.nginxPath, []string{"-s", "reload"})
+	reloadCtx, reloadCancel := a.nginxContext()
+	defer reloadCancel()
+	reloadOut, err := a.run(reloadCtx, a.nginxPath, []string{"-s", "reload"})
+	if reloadOut != "" {
+		if out != "" {
+			out += "\n" + reloadOut
+		} else {
+			out = reloadOut
+		}
+	}
+	if err != nil && reloadCtx.Err() != nil {
+		return out, fmt.Errorf("nginx reload timed out: %w", reloadCtx.Err())
+	}
+	return out, err
 }
 
-func (a *Agent) run(r *http.Request, bin string, args []string) error {
-	out, err := runCommand(r.Context(), bin, args)
+func (a *Agent) run(ctx context.Context, bin string, args []string) (string, error) {
+	out, err := runCommand(ctx, bin, args)
+	text := truncate(string(out), 2048)
 	if err != nil {
-		a.log.Error("agent command failed", "cmd", bin, "args", strings.Join(args, " "), "err", err, "out", truncate(string(out), 512))
-		return fmt.Errorf("%s %s failed: %s", bin, strings.Join(args, " "), truncate(string(out), 512))
+		a.log.Error("agent command failed", "cmd", bin, "args", strings.Join(args, " "), "err", err, "out", text)
+		if text == "" {
+			text = err.Error()
+		}
+		return text, fmt.Errorf("%s %s failed: %s", bin, strings.Join(args, " "), text)
 	}
-	return nil
+	return text, nil
 }

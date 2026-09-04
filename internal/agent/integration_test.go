@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +115,9 @@ func TestDeployOverMTLS(t *testing.T) {
 	if !out.Success {
 		t.Fatalf("deploy not successful: %+v", out)
 	}
+	if strings.TrimSpace(out.Log) == "" {
+		t.Fatal("expected deploy log")
+	}
 	// The files should have been written with the correct permissions.
 	for _, n := range []string{"cert.pem", "fullchain.pem", "privkey.pem"} {
 		if _, err := os.Stat(filepath.Join(certDir, "example.com", n)); err != nil {
@@ -165,4 +169,43 @@ func selfSignedLeaf(t *testing.T, key string) (certPEM, privPEM string) {
 	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	privPEM = string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}))
 	return certPEM, privPEM
+}
+
+func TestHandleDeployIgnoresCancelledRequestContext(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(Config{
+		CertDir:      filepath.Join(dir, "certs"),
+		CertFile:     filepath.Join(dir, "agent.crt"),
+		KeyFile:      filepath.Join(dir, "agent.key"),
+		ServerCAFile: filepath.Join(dir, "ca.crt"),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, priv := selfSignedLeaf(t, "")
+	body, err := json.Marshal(protocol.DeployRequest{
+		CertificateID: "cert1", RootDomain: "example.com", VersionID: "ver1",
+		CertPEM: leaf, PrivateKeyPEM: priv, CAPEM: leaf, FullchainPEM: leaf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, protocol.AgentAPIPrefix+"/deploy", bytes.NewReader(body)).WithContext(ctx)
+	rw := httptest.NewRecorder()
+	a.handleDeploy(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", rw.Code, rw.Body.String())
+	}
+	var out protocol.DeployResponse
+	if err := json.NewDecoder(rw.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Success {
+		t.Fatalf("deploy not successful: %+v", out)
+	}
+	if strings.TrimSpace(out.Log) == "" {
+		t.Fatal("expected deploy log on cancelled request context")
+	}
 }

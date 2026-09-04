@@ -225,6 +225,21 @@ func (w *Web) handleDashboard(rw http.ResponseWriter, r *http.Request) {
 				"When": c.CreatedAt.Format("2006-01-02 15:04"), "Message": c.LastError,
 			})
 		}
+		for _, agentID := range c.TargetAgents {
+			d := c.Deploys[agentID]
+			if d == nil || d.Status != domain.StatusFailed || d.Error == "" {
+				continue
+			}
+			name := agentID
+			if agent := st.Agents[agentID]; agent != nil && agent.Name != "" {
+				name = agent.Name
+			}
+			when := d.LastAttemptAt.Format("2006-01-02 15:04")
+			failures = append(failures, map[string]string{
+				"Domain": c.RootDomain, "Kind": "deploy",
+				"When": when, "Message": name + "：" + d.Error,
+			})
+		}
 	}
 	stats := map[string]int{
 		"Certs": 0, "Issued": 0, "Agents": 0, "Credentials": 0,
@@ -315,7 +330,15 @@ func (w *Web) handleCertificateCreate(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) handleIssue(rw http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, _, err := w.srv.StartIssue(id, taskTypeIssue); err != nil {
-		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		status := http.StatusBadRequest
+		msg := err.Error()
+		if errors.Is(err, errNotFound) {
+			status = http.StatusNotFound
+			msg = "certificate not found"
+		} else if errors.Is(err, errCertDeploying) {
+			status = http.StatusConflict
+		}
+		writeJSONErr(rw, status, msg)
 		return
 	}
 	w.renderCertificateRow(rw, id)
@@ -355,40 +378,63 @@ func (w *Web) certificateLogData(rw http.ResponseWriter, id string) (map[string]
 		writeJSONErr(rw, http.StatusInternalServerError, err.Error())
 		return nil, false
 	}
+	deploys := make([]certificateDeployLog, 0, len(cert.TargetAgents))
+	for _, agentID := range cert.TargetAgents {
+		name := agentID
+		if agent := w.srv.st.State().Agents[agentID]; agent != nil && agent.Name != "" {
+			name = agent.Name
+		}
+		state := cert.Deploys[agentID]
+		status := domain.OperationStatus("")
+		nginx, errText, lastLog := "", "", ""
+		if state != nil {
+			status = state.Status
+			nginx = state.NginxStatus
+			errText = state.Error
+			lastLog = state.LastLog
+		}
+		fileLog, err := w.srv.st.ReadAgentDeployLog(id, agentID)
+		if err != nil {
+			writeJSONErr(rw, http.StatusInternalServerError, err.Error())
+			return nil, false
+		}
+		if strings.TrimSpace(fileLog) != "" {
+			lastLog = fileLog
+		}
+		deploys = append(deploys, certificateDeployLog{
+			Name: name, Status: string(status), StatusLabel: deployStatusLabel(status),
+			NginxStatus: nginx, Error: errText, Log: lastLog,
+		})
+	}
 	return map[string]any{
-		"ID": id, "RootDomain": cert.RootDomain, "Log": logText,
-		"Running": cert.IssueStatus == domain.StatusRunning,
+		"ID": id, "RootDomain": cert.RootDomain, "Log": logText, "Deploys": deploys,
+		"Running": certificateBusy(cert),
 	}, true
 }
 
 func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	cert := w.srv.st.State().Certificates[id]
-	if cert == nil {
-		writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+	started, err := w.srv.StartDeploy(id)
+	if err != nil {
+		status := http.StatusBadRequest
+		msg := err.Error()
+		switch {
+		case errors.Is(err, errNotFound):
+			status = http.StatusNotFound
+			msg = "certificate not found"
+		case errors.Is(err, errCertNotIssued), errors.Is(err, errNoTargetAgents):
+			status = http.StatusUnprocessableEntity
+		case errors.Is(err, errCertIssuing):
+			status = http.StatusConflict
+		}
+		writeJSONErr(rw, status, msg)
 		return
 	}
-	if cert.Current == nil {
-		writeJSONErr(rw, http.StatusUnprocessableEntity, "证书尚未签发，未执行下发")
-		return
+	if started {
+		setToastTrigger(rw, "已开始异步下发到目标 Agent", "success")
+	} else {
+		setToastTrigger(rw, "该证书已有下发任务正在运行", "success")
 	}
-	if cert.IssueStatus == domain.StatusRunning {
-		writeJSONErr(rw, http.StatusConflict, "证书正在签发，请稍后再下发")
-		return
-	}
-	if len(cert.TargetAgents) == 0 {
-		writeJSONErr(rw, http.StatusUnprocessableEntity, "未配置目标 Agent，未执行下发")
-		return
-	}
-	if err := w.srv.DeployAll(r.Context(), id); err != nil {
-		writeJSONErr(rw, http.StatusBadGateway, err.Error())
-		return
-	}
-	if !certificateDeploymentComplete(w.srv.st.State().Certificates[id]) {
-		writeJSONErr(rw, http.StatusConflict, "证书配置已变更，请确认后重新下发")
-		return
-	}
-	setToastTrigger(rw, "证书已成功下发到全部目标 Agent", "success")
 	w.renderCertificateRow(rw, id)
 }
 
@@ -742,9 +788,16 @@ type certificateRow struct {
 	ExpiresAt            string
 	KeyType              string
 	LastError            string
+	DeployError          string
+	Issuing              bool
+	Deploying            bool
 	Running              bool
 	CanDeploy            bool
 	DeployDisabledReason string
+}
+
+type certificateDeployLog struct {
+	Name, Status, StatusLabel, NginxStatus, Error, Log string
 }
 
 // certificateForm holds the data shared by the new/edit certificate form. The
@@ -816,20 +869,50 @@ func makeCertificateRow(cert *domain.Certificate) certificateRow {
 		issuedAt = cert.Current.IssuedAt.Format("2006-01-02")
 		expiresAt = cert.Current.ExpiresAt.Format("2006-01-02")
 	}
-	canDeploy := cert.Current != nil && len(cert.TargetAgents) > 0 && cert.IssueStatus != domain.StatusRunning
+	issuing := cert.IssueStatus == domain.StatusRunning
+	deploying := cert.DeployStatus == domain.StatusRunning
+	canDeploy := cert.Current != nil && len(cert.TargetAgents) > 0 && !issuing && !deploying
 	disabledReason := ""
 	if cert.Current == nil {
 		disabledReason = "请先签发证书"
-	} else if cert.IssueStatus == domain.StatusRunning {
+	} else if issuing {
 		disabledReason = "证书正在签发"
+	} else if deploying {
+		disabledReason = "证书正在下发"
 	} else if len(cert.TargetAgents) == 0 {
 		disabledReason = "未配置目标 Agent"
 	}
 	return certificateRow{
 		ID: cert.ID, RootDomain: cert.RootDomain,
 		IssueStatus: string(cert.IssueStatus), IssueStatusLabel: label,
-		IssuedAt: issuedAt, ExpiresAt: expiresAt, KeyType: string(cert.KeyType), LastError: cert.LastError,
-		Running: cert.IssueStatus == domain.StatusRunning, CanDeploy: canDeploy,
+		IssuedAt: issuedAt, ExpiresAt: expiresAt, KeyType: string(cert.KeyType),
+		LastError: cert.LastError, DeployError: certificateDeployError(cert),
+		Issuing: issuing, Deploying: deploying, Running: issuing || deploying, CanDeploy: canDeploy,
 		DeployDisabledReason: disabledReason,
 	}
+}
+
+func certificateBusy(cert *domain.Certificate) bool {
+	return cert != nil && (cert.IssueStatus == domain.StatusRunning || cert.DeployStatus == domain.StatusRunning)
+}
+
+func deployStatusLabel(status domain.OperationStatus) string {
+	return map[domain.OperationStatus]string{
+		domain.StatusPending: "待下发", domain.StatusRunning: "下发中",
+		domain.StatusSuccess: "已下发", domain.StatusFailed: "下发失败",
+	}[status]
+}
+
+func certificateDeployError(cert *domain.Certificate) string {
+	if cert == nil || cert.DeployStatus == domain.StatusRunning {
+		return ""
+	}
+	var parts []string
+	for _, agentID := range cert.TargetAgents {
+		d := cert.Deploys[agentID]
+		if d != nil && d.Status == domain.StatusFailed && strings.TrimSpace(d.Error) != "" {
+			parts = append(parts, d.Error)
+		}
+	}
+	return strings.Join(parts, "；")
 }

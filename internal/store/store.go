@@ -251,6 +251,41 @@ func (s *Store) ReadCertificateLog(certID string) (string, error) {
 	return string(data), nil
 }
 
+func (s *Store) agentDeployLogPath(certID, agentID string) (string, error) {
+	if err := validateID(certID); err != nil {
+		return "", err
+	}
+	if err := validateID(agentID); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.dataDir, "certs", certID, "deploys", agentID+".log"), nil
+}
+
+// WriteAgentDeployLog replaces the last deploy log for one certificate+agent.
+func (s *Store) WriteAgentDeployLog(certID, agentID, text string) error {
+	path, err := s.agentDeployLogPath(certID, agentID)
+	if err != nil {
+		return err
+	}
+	return writeFileSync(path, []byte(text), 0o600)
+}
+
+// ReadAgentDeployLog returns the last deploy log for one certificate+agent.
+func (s *Store) ReadAgentDeployLog(certID, agentID string) (string, error) {
+	path, err := s.agentDeployLogPath(certID, agentID)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // RemoveCertVersion deletes the on-disk certificate version directory.
 func (s *Store) RemoveCertVersion(certID, versionID string) error {
 	if err := validateID(versionID); err != nil {

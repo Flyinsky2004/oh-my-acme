@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"html/template"
 	"strings"
 	"testing"
@@ -54,6 +55,54 @@ func TestEnsureDefaultsRecoversInterruptedIssue(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultsRecoversInterruptedDeploy(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedIssueState(t, st)
+	if err := st.WithState(true, func(s *domain.State) error {
+		s.Certificates["cert1"].Current = &domain.CertificateVersion{ID: "v1"}
+		s.Certificates["cert1"].DeployStatus = domain.StatusRunning
+		s.Certificates["cert1"].TargetAgents = []string{"agent1"}
+		s.Certificates["cert1"].Deploys = map[string]*domain.AgentDeployState{
+			"agent1": {AgentID: "agent1", Status: domain.StatusRunning},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	(&Server{st: st}).ensureDefaults()
+	got := st.State().Certificates["cert1"]
+	if got.DeployStatus != domain.StatusFailed {
+		t.Fatalf("certificate deploy status = %s", got.DeployStatus)
+	}
+	if d := got.Deploys["agent1"]; d == nil || d.Status != domain.StatusFailed || d.Error != "interrupted by server restart" {
+		t.Fatalf("agent deploy not recovered: %+v", d)
+	}
+}
+
+func TestClaimIssueBlockedWhileDeploying(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedIssueState(t, st)
+	if err := st.WithState(true, func(s *domain.State) error {
+		s.Certificates["cert1"].DeployStatus = domain.StatusRunning
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, task, started, err := (&Server{st: st}).claimIssue("cert1", taskTypeIssue)
+	if !errors.Is(err, errCertDeploying) {
+		t.Fatalf("claimIssue err = %v, want errCertDeploying", err)
+	}
+	if started || task != nil {
+		t.Fatalf("claimIssue started=%v task=%v", started, task)
+	}
+}
+
 func TestCertificateRowPollsOnlyWhileRunning(t *testing.T) {
 	tmpl, err := template.ParseFS(templatesFS, "web/templates/*.html")
 	if err != nil {
@@ -67,11 +116,22 @@ func TestCertificateRowPollsOnlyWhileRunning(t *testing.T) {
 		}
 		return out.String()
 	}
-	if got := render(domain.StatusRunning); !strings.Contains(got, `hx-get="/certificates/cert1/row"`) {
+	if got := render(domain.StatusRunning); !strings.Contains(got, `hx-get="/certificates/cert1/row"`) || !strings.Contains(got, `hx-trigger="every 5s"`) {
 		t.Fatalf("running row does not poll: %s", got)
 	}
 	if got := render(domain.StatusSuccess); strings.Contains(got, "hx-trigger") {
 		t.Fatalf("terminal row still polls: %s", got)
+	}
+	var deployOut strings.Builder
+	deployCert := &domain.Certificate{
+		ID: "cert1", RootDomain: "example.com", KeyType: domain.KeyTypeEC256,
+		Current: &domain.CertificateVersion{ID: "v1"}, DeployStatus: domain.StatusRunning,
+	}
+	if err := tmpl.ExecuteTemplate(&deployOut, "certificate-row", makeCertificateRow(deployCert)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(deployOut.String(), `hx-get="/certificates/cert1/row"`) || !strings.Contains(deployOut.String(), `hx-trigger="every 5s"`) {
+		t.Fatalf("deploying row does not poll: %s", deployOut.String())
 	}
 }
 

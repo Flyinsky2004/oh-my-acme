@@ -203,15 +203,19 @@ func TestTelegramDraftConsumeAndExpiry(t *testing.T) {
 }
 
 func TestTelegramDeploymentSingleFlight(t *testing.T) {
-	controller := &TelegramController{deploying: map[string]bool{}}
-	if !controller.beginDeployment("cert") {
-		t.Fatal("first deployment claim failed")
+	web, st, _ := newDeployFeedbackTestWeb(t)
+	setDeployFeedbackCertificate(t, st, &domain.CertificateVersion{ID: "v1"}, []string{"agent1"})
+	if err := st.WithState(true, func(state *domain.State) error {
+		state.Certificates["cert1"].DeployStatus = domain.StatusRunning
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if controller.beginDeployment("cert") {
+	started, err := web.srv.StartDeploy("cert1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started {
 		t.Fatal("duplicate deployment claim succeeded")
-	}
-	controller.endDeployment("cert")
-	if !controller.beginDeployment("cert") {
-		t.Fatal("deployment claim was not released")
 	}
 }

@@ -1,17 +1,24 @@
 {{define "certificate-log-content"}}
-<pre id="certificate-log" class="terminal" {{if .Running}}hx-get="/certificates/{{.ID}}/log/content" hx-trigger="load delay:5s" hx-target="this" hx-swap="outerHTML"{{end}}>{{if .Log}}{{.Log}}{{else}}暂无签发日志。{{end}}</pre>
+<div id="certificate-log-wrap" {{if .Running}}hx-get="/certificates/{{.ID}}/log/content" hx-trigger="every 5s" hx-sync="this:replace" hx-target="this" hx-swap="outerHTML"{{end}}>
+  <pre id="certificate-log" class="terminal">{{if .Log}}{{.Log}}{{else}}暂无签发日志。{{end}}</pre>
+  {{range .Deploys}}
+  <h3>{{.Name}}{{if .StatusLabel}} <span class="badge {{.Status}}">{{.StatusLabel}}</span>{{end}}</h3>
+  {{if .Error}}<p class="certificate-error" role="alert">{{.Error}}</p>{{end}}
+  <pre class="terminal compact">{{if .Log}}{{.Log}}{{else}}暂无下发日志。{{end}}</pre>
+  {{end}}
+</div>
 {{end}}
 
 {{define "certificate-log"}}
 <header class="page-header">
   <div>
-    <p class="page-eyebrow">签发过程</p>
+    <p class="page-eyebrow">签发与下发</p>
     <h1>{{.RootDomain}}</h1>
-    <p class="page-description">只保存最近一次签发或续期过程；新任务开始时会覆盖旧日志。</p>
+    <p class="page-description">签发日志只保留最近一次签发或续期过程；每个目标 Agent 只保留最近一次下发日志。</p>
   </div>
   <a class="button button-secondary" href="/certificates">返回证书列表</a>
 </header>
-<section class="glass-panel" aria-label="签发日志">
+<section class="glass-panel" aria-label="证书日志">
   {{template "certificate-log-content" .}}
 </section>
 <script>

@@ -15,7 +15,7 @@ import (
 
 const (
 	telegramAPITimeout = 10 * time.Second
-	telegramDeployWait = 5 * time.Minute
+	telegramDeployWait = 15 * time.Minute
 	telegramIssueWait  = 27 * time.Minute
 	telegramTextLimit  = 3800
 )
@@ -34,7 +34,6 @@ type TelegramController struct {
 	status      string
 	lastError   string
 	pending     map[int64]telegramPending
-	deploying   map[string]bool
 }
 
 type telegramDraft struct {
@@ -55,10 +54,9 @@ type telegramPending struct {
 
 func newTelegramController(srv *Server) *TelegramController {
 	return &TelegramController{
-		srv:       srv,
-		status:    "disabled",
-		pending:   map[int64]telegramPending{},
-		deploying: map[string]bool{},
+		srv:     srv,
+		status:  "disabled",
+		pending: map[int64]telegramPending{},
 	}
 }
 
@@ -420,30 +418,33 @@ func (t *TelegramController) startDeploy(ctx context.Context, b *bot.Bot, chatID
 		t.send(ctx, b, chatID, "证书尚未签发成功，无法部署。", nil)
 		return
 	}
-	if !t.beginDeployment(certID) {
+	started, err := t.srv.StartDeploy(certID)
+	if err != nil {
+		t.send(ctx, b, chatID, "无法开始部署："+err.Error(), nil)
+		return
+	}
+	if !started {
 		t.send(ctx, b, chatID, "该证书已有部署任务正在运行。", nil)
 		return
 	}
 	t.send(ctx, b, chatID, "已开始异步部署到目标 Agents。", nil)
 	t.srv.log.Info("telegram privileged action", "action", "deploy_certificate", "chat_id", chatID, "certificate_id", certID)
 	t.srv.Go(func(parent context.Context) {
-		defer t.endDeployment(certID)
-		deployCtx, cancel := context.WithTimeout(parent, telegramDeployWait)
-		defer cancel()
-		err := t.srv.DeployAll(deployCtx, certID)
+		ok, msg := t.waitForDeploy(parent, certID)
 		if parent.Err() != nil {
 			return
 		}
-		if err != nil {
-			t.send(t.srv.Context(), b, chatID, "部署失败："+err.Error(), nil)
+		if ok {
+			t.send(t.srv.Context(), b, chatID, "证书部署完成。", nil)
 			return
 		}
-		t.send(t.srv.Context(), b, chatID, "证书部署完成。", nil)
+		t.send(t.srv.Context(), b, chatID, msg, nil)
 	})
 }
 
 func (t *TelegramController) showCertificateLog(ctx context.Context, b *bot.Bot, chatID int64, certID string) {
-	if t.srv.st.State().Certificates[certID] == nil {
+	cert := t.srv.st.State().Certificates[certID]
+	if cert == nil {
 		t.send(ctx, b, chatID, "未找到该证书。", nil)
 		return
 	}
@@ -455,7 +456,8 @@ func (t *TelegramController) showCertificateLog(ctx context.Context, b *bot.Bot,
 	if strings.TrimSpace(logText) == "" {
 		logText = "暂无签发日志。"
 	}
-	t.send(ctx, b, chatID, "签发日志\n"+truncateTelegramLog(logText), telegramKeyboard([][]models.InlineKeyboardButton{telegramRow(telegramButton("返回证书", "tg:cert:"+certID))}))
+	logText += telegramDeployLogs(t.srv.st, cert)
+	t.send(ctx, b, chatID, "证书日志\n"+truncateTelegramLog(logText), telegramKeyboard([][]models.InlineKeyboardButton{telegramRow(telegramButton("返回证书", "tg:cert:"+certID))}))
 }
 
 func (t *TelegramController) confirmCertificateDelete(ctx context.Context, b *bot.Bot, chatID int64, certID string) {
@@ -624,19 +626,23 @@ func (t *TelegramController) waitForIssueAndDeploy(parent context.Context, b *bo
 		}
 		switch cert.IssueStatus {
 		case domain.StatusSuccess:
-			if !t.beginDeployment(certID) {
-				t.send(t.srv.Context(), b, chatID, "签发已完成；已有部署任务正在运行。", nil)
-				return
-			}
-			defer t.endDeployment(certID)
-			deployCtx, cancel := context.WithTimeout(parent, telegramDeployWait)
-			err := t.srv.DeployAll(deployCtx, certID)
-			cancel()
+			started, err := t.srv.StartDeploy(certID)
 			if err != nil {
-				t.send(t.srv.Context(), b, chatID, "签发已完成，但部署失败："+err.Error(), nil)
+				t.send(t.srv.Context(), b, chatID, "签发已完成，但无法开始部署："+err.Error(), nil)
 				return
 			}
-			t.send(t.srv.Context(), b, chatID, "签发和部署均已完成。", nil)
+			if !started {
+				t.send(t.srv.Context(), b, chatID, "签发已完成；已有部署任务正在运行。", nil)
+			}
+			ok, msg := t.waitForDeploy(parent, certID)
+			if parent.Err() != nil {
+				return
+			}
+			if ok {
+				t.send(t.srv.Context(), b, chatID, "签发和部署均已完成。", nil)
+				return
+			}
+			t.send(t.srv.Context(), b, chatID, "签发已完成，但"+msg, nil)
 			return
 		case domain.StatusFailed:
 			t.send(t.srv.Context(), b, chatID, "签发失败："+cert.LastError, nil)
@@ -651,6 +657,80 @@ func (t *TelegramController) waitForIssueAndDeploy(parent context.Context, b *bo
 		case <-ticker.C:
 		}
 	}
+}
+
+func (t *TelegramController) waitForDeploy(parent context.Context, certID string) (bool, string) {
+	deadline := time.NewTimer(telegramDeployWait)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		cert := t.srv.st.State().Certificates[certID]
+		if cert == nil {
+			return false, "证书已删除。"
+		}
+		switch cert.DeployStatus {
+		case domain.StatusSuccess:
+			return true, ""
+		case domain.StatusFailed:
+			return false, "部署失败：" + deployFailureMessage(cert)
+		}
+		select {
+		case <-parent.Done():
+			return false, ""
+		case <-deadline.C:
+			return false, "等待部署完成超时；请在证书详情中查看状态。"
+		case <-ticker.C:
+		}
+	}
+}
+
+func deployFailureMessage(cert *domain.Certificate) string {
+	if cert == nil {
+		return "未知错误"
+	}
+	var parts []string
+	for _, agentID := range cert.TargetAgents {
+		d := cert.Deploys[agentID]
+		if d != nil && d.Status != domain.StatusSuccess && strings.TrimSpace(d.Error) != "" {
+			parts = append(parts, agentID+"："+d.Error)
+		}
+	}
+	if len(parts) == 0 {
+		return "未全部下发成功"
+	}
+	return strings.Join(parts, "；")
+}
+
+func telegramDeployLogs(st interface {
+	ReadAgentDeployLog(string, string) (string, error)
+}, cert *domain.Certificate) string {
+	if cert == nil || len(cert.TargetAgents) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, agentID := range cert.TargetAgents {
+		logText, err := st.ReadAgentDeployLog(cert.ID, agentID)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(logText) == "" {
+			if d := cert.Deploys[agentID]; d != nil {
+				logText = d.LastLog
+				if strings.TrimSpace(logText) == "" {
+					logText = d.Error
+				}
+			}
+		}
+		if strings.TrimSpace(logText) == "" {
+			continue
+		}
+		b.WriteString("\n\n下发日志 ")
+		b.WriteString(agentID)
+		b.WriteByte('\n')
+		b.WriteString(logText)
+	}
+	return b.String()
 }
 
 func (t *TelegramController) showAgents(ctx context.Context, b *bot.Bot, chatID int64) {

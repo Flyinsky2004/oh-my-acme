@@ -83,22 +83,6 @@ func (t *TelegramController) setPending(chatID int64, pending telegramPending) {
 	t.pending[chatID] = pending
 }
 
-func (t *TelegramController) beginDeployment(certID string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.deploying[certID] {
-		return false
-	}
-	t.deploying[certID] = true
-	return true
-}
-
-func (t *TelegramController) endDeployment(certID string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	delete(t.deploying, certID)
-}
-
 func (t *TelegramController) pendingFor(chatID int64) (telegramPending, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -803,6 +803,11 @@
     overflow-wrap: anywhere;
   }
 
+  .terminal.compact {
+    min-height: 8rem;
+    max-height: 16rem;
+  }
+
   pre code {
     padding: 0;
     color: inherit;

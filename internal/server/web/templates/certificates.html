@@ -1,15 +1,18 @@
 {{define "certificate-row"}}
-<tr id="cert-{{.ID}}" {{if .Running}}hx-get="/certificates/{{.ID}}/row" hx-trigger="load delay:5s" hx-target="this" hx-swap="outerHTML"{{end}}>
+<tr id="cert-{{.ID}}" {{if .Running}}hx-get="/certificates/{{.ID}}/row" hx-trigger="every 5s" hx-sync="this:replace" hx-target="this" hx-swap="outerHTML"{{end}}>
   <td class="cell-primary">{{.RootDomain}}</td>
   <td>
     <span class="badge {{.IssueStatus}}">{{.IssueStatusLabel}}</span>
     {{if .LastError}}<div class="certificate-error" role="alert">{{template "icon-alert"}}<span>{{.LastError}}</span></div>{{end}}
+    {{if .DeployError}}<div class="certificate-error" role="alert">{{template "icon-alert"}}<span>{{.DeployError}}</span></div>{{end}}
   </td>
   <td>{{.IssuedAt}} → {{.ExpiresAt}}</td>
   <td><code>{{.KeyType}}</code></td>
   <td><div class="cell-actions">
-    {{if .Running}}
+    {{if .Issuing}}
       <button type="button" disabled>签发中</button>
+    {{else if .Deploying}}
+      <button type="button" disabled>下发中</button>
     {{else}}
       <button type="button" hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">签发</button>
     {{end}}

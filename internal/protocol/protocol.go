@@ -59,6 +59,7 @@ type DeployResponse struct {
 	AgentID     string `json:"agent_id"`
 	NginxStatus string `json:"nginx_status"` // "not-found" | "ok" | "failed"
 	Error       string `json:"error,omitempty"`
+	Log         string `json:"log,omitempty"`
 }
 
 // ---- Agent binary update (server -> agent) ----

@@ -106,6 +106,8 @@ type Server struct {
 	selfUpdateStatus domain.OperationStatus
 	selfUpdateTarget string
 	selfUpdateError  string
+
+	deployTimeout time.Duration
 }
 
 // StartOptions are the dependencies the server needs to boot.
@@ -233,6 +235,18 @@ func (s *Server) ensureDefaults() {
 			if cert.IssueStatus == domain.StatusRunning {
 				cert.IssueStatus = domain.StatusFailed
 				cert.LastError = "interrupted by server restart"
+			}
+			if cert.DeployStatus == domain.StatusRunning {
+				cert.DeployStatus = domain.StatusFailed
+				for _, deploy := range cert.Deploys {
+					if deploy != nil && deploy.Status == domain.StatusRunning {
+						deploy.Status = domain.StatusFailed
+						deploy.Error = "interrupted by server restart"
+						if deploy.LastLog == "" {
+							deploy.LastLog = deploy.Error
+						}
+					}
+				}
 			}
 		}
 		if st.Config.DefaultKeyType == "" {

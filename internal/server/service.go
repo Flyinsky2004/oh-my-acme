@@ -80,6 +80,9 @@ func (s *Server) UpdateCertificate(id, root, credID, caID string, keyType domain
 		if cert.IssueStatus == domain.StatusRunning {
 			return errors.New("certificate is currently issuing, cannot edit")
 		}
+		if cert.DeployStatus == domain.StatusRunning {
+			return errors.New("certificate is currently deploying, cannot edit")
+		}
 		if keyType == "" {
 			keyType = st.Config.DefaultKeyType
 		}
@@ -110,6 +113,9 @@ func (s *Server) DeleteCertificate(id string) error {
 		}
 		if cert.IssueStatus == domain.StatusRunning {
 			return errors.New("certificate is currently issuing, cannot delete")
+		}
+		if cert.DeployStatus == domain.StatusRunning {
+			return errors.New("certificate is currently deploying, cannot delete")
 		}
 		delete(st.Certificates, id)
 		for taskID, task := range st.Tasks {
@@ -170,7 +176,7 @@ func (s *Server) StartIssue(certID, taskType string) (*domain.Task, bool, error)
 			return
 		}
 		if plan.TaskType == taskTypeRenew {
-			if err := s.DeployAll(ctx, plan.CertID); err != nil {
+			if _, err := s.StartDeploy(plan.CertID); err != nil {
 				s.log.Error("auto-deploy after renew failed", "cert_id", plan.CertID, "err", err)
 			}
 		}
@@ -202,6 +208,9 @@ func (s *Server) claimIssue(certID, taskType string) (issuePlan, *domain.Task, b
 				result = &copy
 				return nil
 			}
+		}
+		if cert.DeployStatus == domain.StatusRunning {
+			return errCertDeploying
 		}
 		ca := st.CAs[cert.ACMEID]
 		cred := st.Credentials[cert.CredentialID]
@@ -342,51 +351,175 @@ func (s *Server) issuerFor(caID, dirURL, accountEmail string) (*acme.Issuer, err
 
 // --- Deployment ---
 
+// Two certificates serialized on one agent each need an nginx restart
+// (30s cap). 90s covers that wait plus file swap without a false timeout.
+const defaultAgentDeployTimeout = 90 * time.Second
+
+var (
+	errCertNotIssued  = errors.New("证书尚未签发，未执行下发")
+	errCertIssuing    = errors.New("证书正在签发，请稍后再下发")
+	errCertDeploying  = errors.New("证书正在下发，请稍后再签发")
+	errNoTargetAgents = errors.New("未配置目标 Agent，未执行下发")
+)
+
+func (s *Server) agentDeployTimeout() time.Duration {
+	if s.deployTimeout > 0 {
+		return s.deployTimeout
+	}
+	return defaultAgentDeployTimeout
+}
+
+func (s *Server) shuttingDown() bool {
+	return s.ctx != nil && s.ctx.Err() != nil
+}
+
+// StartDeploy claims a per-certificate deploy lock and pushes to every target
+// agent in the Server lifecycle. A duplicate start is idempotent.
+func (s *Server) StartDeploy(certID string) (bool, error) {
+	started := false
+	err := s.st.WithState(true, func(st *domain.State) error {
+		cert := st.Certificates[certID]
+		if cert == nil {
+			return errNotFound
+		}
+		if cert.Current == nil {
+			return errCertNotIssued
+		}
+		if cert.IssueStatus == domain.StatusRunning {
+			return errCertIssuing
+		}
+		if len(cert.TargetAgents) == 0 {
+			return errNoTargetAgents
+		}
+		if cert.DeployStatus == domain.StatusRunning {
+			return nil
+		}
+		if cert.Deploys == nil {
+			cert.Deploys = map[string]*domain.AgentDeployState{}
+		}
+		now := time.Now()
+		for _, agentID := range cert.TargetAgents {
+			d := cert.Deploys[agentID]
+			if d == nil {
+				d = &domain.AgentDeployState{AgentID: agentID}
+				cert.Deploys[agentID] = d
+			}
+			d.Status = domain.StatusRunning
+			d.LastAttemptAt = now
+		}
+		cert.DeployStatus = domain.StatusRunning
+		started = true
+		return nil
+	})
+	if err != nil || !started {
+		return started, err
+	}
+	s.Go(func(parent context.Context) {
+		ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+		defer cancel()
+		if err := s.DeployAll(ctx, certID); err != nil {
+			s.log.Error("certificate deploy finished with errors", "cert_id", certID, "err", err)
+		}
+		s.finishDeploy(certID)
+	})
+	return true, nil
+}
+
 // DeployCert pushes the certificate's current version to a single agent.
 func (s *Server) DeployCert(ctx context.Context, certID, agentID string) error {
 	st := s.st.State()
 	cert := st.Certificates[certID]
 	agent := st.Agents[agentID]
 	if cert == nil || cert.Current == nil {
-		return errors.New("certificate has no issued version")
+		err := errors.New("certificate has no issued version")
+		s.recordDeploy(certID, agentID, false, "", "", err.Error(), err.Error())
+		return err
 	}
 	if agent == nil {
-		return errors.New("agent not found")
+		err := errors.New("agent not found")
+		s.recordDeploy(certID, agentID, false, "", "", err.Error(), err.Error())
+		return err
 	}
 	req, err := buildDeployRequest(s.st, cert)
 	if err != nil {
+		s.recordDeploy(certID, agentID, false, cert.Current.ID, "", err.Error(), err.Error())
 		return err
 	}
 	resp, err := s.pushCert(ctx, agent, req)
 	if err != nil {
-		s.recordDeploy(certID, agentID, false, "", err.Error())
+		s.recordDeploy(certID, agentID, false, cert.Current.ID, "", err.Error(), err.Error())
 		return err
 	}
-	if !resp.Success {
-		s.recordDeploy(certID, agentID, false, cert.Current.ID, resp.Error)
-		return fmt.Errorf("agent deploy failed: %s", resp.Error)
+	logText := strings.TrimSpace(resp.Log)
+	if logText == "" {
+		logText = strings.TrimSpace(resp.Error)
 	}
-	s.recordDeploy(certID, agentID, true, cert.Current.ID, "")
+	if logText == "" {
+		logText = "nginx: " + resp.NginxStatus
+	}
+	if !resp.Success {
+		msg := resp.Error
+		if msg == "" {
+			msg = "agent deploy failed"
+		}
+		s.recordDeploy(certID, agentID, false, cert.Current.ID, resp.NginxStatus, msg, logText)
+		return fmt.Errorf("agent %s deploy failed: %s", agentLabel(agent), msg)
+	}
+	s.recordDeploy(certID, agentID, true, cert.Current.ID, resp.NginxStatus, "", logText)
 	return nil
 }
 
-// DeployAll pushes the current version to every target agent, recording each
-// result independently. Returns the first error (other agents still attempted).
+// DeployAll pushes the current version to every target agent. Each agent uses
+// an isolated timeout so one hang or failure cannot cancel the rest.
 func (s *Server) DeployAll(ctx context.Context, certID string) error {
 	st := s.st.State()
 	cert := st.Certificates[certID]
 	if cert == nil {
 		return errNotFound
 	}
+	agents := append([]string(nil), cert.TargetAgents...)
 	var firstErr error
-	for _, agentID := range cert.TargetAgents {
-		if err := s.DeployCert(ctx, certID, agentID); err != nil {
+	for _, agentID := range agents {
+		if s.shuttingDown() {
+			s.recordDeploy(certID, agentID, false, "", "", "server shutting down", "server shutting down")
 			if firstErr == nil {
-				firstErr = err
+				firstErr = errors.New("server shutting down")
 			}
+			continue
+		}
+		agentCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.agentDeployTimeout())
+		err := s.DeployCert(agentCtx, certID, agentID)
+		cancel()
+		if err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+func (s *Server) finishDeploy(certID string) {
+	_ = s.st.WithState(true, func(st *domain.State) error {
+		cert := st.Certificates[certID]
+		if cert == nil {
+			return nil
+		}
+		if certificateDeploymentComplete(cert) {
+			cert.DeployStatus = domain.StatusSuccess
+			return nil
+		}
+		cert.DeployStatus = domain.StatusFailed
+		return nil
+	})
+}
+
+func agentLabel(agent *domain.Agent) string {
+	if agent == nil {
+		return "unknown"
+	}
+	if agent.Name != "" {
+		return agent.Name
+	}
+	return agent.ID
 }
 
 // buildDeployRequest loads version PEM files and assembles a DeployRequest.
@@ -410,7 +543,7 @@ func buildDeployRequest(st *store.Store, cert *domain.Certificate) (protocol.Dep
 func (s *Server) pushCert(ctx context.Context, agent *domain.Agent, req protocol.DeployRequest) (*protocol.DeployResponse, error) {
 	u := fmt.Sprintf("https://%s:%d%s/deploy", agent.Address, agent.Port, protocol.AgentAPIPrefix)
 	client := &http.Client{
-		Timeout:   s.agentDialTimeout(),
+		Timeout:   s.agentDeployTimeout(),
 		Transport: &http.Transport{TLSClientConfig: s.cliTLSCfg},
 	}
 	body, err := encodeJSON(req)
@@ -434,12 +567,23 @@ func (s *Server) pushCert(ctx context.Context, agent *domain.Agent, req protocol
 	return &out, nil
 }
 
-// recordDeploy persists the per-agent deployment result.
-func (s *Server) recordDeploy(certID, agentID string, success bool, versionID, msg string) {
+// recordDeploy persists the per-agent deployment result and last log.
+func (s *Server) recordDeploy(certID, agentID string, success bool, versionID, nginxStatus, msg, logText string) {
+	logText = strings.TrimSpace(logText)
+	if logText == "" {
+		logText = strings.TrimSpace(msg)
+	}
+	if len(logText) > 8192 {
+		logText = logText[:8192]
+	}
+	now := time.Now()
 	_ = s.st.WithState(true, func(st *domain.State) error {
 		c := st.Certificates[certID]
 		if c == nil {
 			return nil
+		}
+		if c.Deploys == nil {
+			c.Deploys = map[string]*domain.AgentDeployState{}
 		}
 		d := c.Deploys[agentID]
 		if d == nil {
@@ -447,10 +591,12 @@ func (s *Server) recordDeploy(certID, agentID string, success bool, versionID, m
 			c.Deploys[agentID] = d
 		}
 		d.VersionID = versionID
-		d.LastAttemptAt = time.Now()
+		d.NginxStatus = nginxStatus
+		d.LastAttemptAt = now
+		d.LastLog = logText
 		if success {
 			d.Status = domain.StatusSuccess
-			d.LastSuccessAt = time.Now()
+			d.LastSuccessAt = now
 			d.Error = ""
 			d.RetryCount = 0
 		} else {
@@ -460,6 +606,10 @@ func (s *Server) recordDeploy(certID, agentID string, success bool, versionID, m
 		}
 		return nil
 	})
+	header := fmt.Sprintf("[%s] cert=%s agent=%s success=%t nginx=%s\n", now.Format("15:04:05"), certID, agentID, success, nginxStatus)
+	if err := s.st.WriteAgentDeployLog(certID, agentID, header+logText+"\n"); err != nil {
+		s.log.Warn("write agent deploy log failed", "cert_id", certID, "agent_id", agentID, "err", err)
+	}
 }
 
 // AgentVersions refreshes an Agent's live version/platform and returns stable

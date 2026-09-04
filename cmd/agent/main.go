@@ -32,6 +32,7 @@ func main() {
 	flag.Parse()
 
 	log := newLogger(*logLevel)
+	log.Info("agent version", "version", agent.Version)
 
 	if err := run(context.Background(), *configPath, log); err != nil {
 		if errors.Is(err, agent.ErrRestart) {

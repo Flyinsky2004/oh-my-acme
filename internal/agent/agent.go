@@ -221,16 +221,9 @@ func (a *Agent) deploy(r *http.Request, req protocol.DeployRequest) protocol.Dep
 		return resp
 	}
 
-	// Stage 3: nginx check + reload when installed. Roll back on failure so a
-	// bad certificate never leaves the webserver in a broken state.
+	// Stage 3: apply the new certs when nginx is installed. Roll back on failure
+	// so a bad certificate never leaves the webserver in a broken state.
 	if a.nginxInstalled {
-		if err := a.checkNginx(r); err != nil {
-			rollback(paths)
-			cleanupStaged(paths)
-			resp.NginxStatus = "failed"
-			resp.Error = err.Error()
-			return resp
-		}
 		if err := a.reloadNginx(r); err != nil {
 			rollback(paths)
 			cleanupStaged(paths)
@@ -256,14 +249,19 @@ func (a *Agent) checkNginx(r *http.Request) error {
 	return a.run(r, a.nginxPath, []string{"-t"})
 }
 
-// reloadNginx runs the hard-coded <systemctl> restart nginx, falling back to
-// <nginx> -s reload when systemctl is missing. A restart is used because a
-// config change that alters listening sockets is not picked up by a reload.
+// reloadNginx applies the freshly swapped certs. When systemctl is present it
+// runs <systemctl> restart nginx, which is itself the validation: if the config
+// or certs are bad, nginx fails to start and systemctl returns non-zero. A
+// standalone <nginx> -t is deliberately skipped there, because it breaks inside
+// this agent's sandboxed systemd unit (ProtectSystem=full / PrivateTmp) and is
+// redundant with the restart. Only the non-systemd fallback tests the config
+// explicitly before <nginx> -s reload.
 func (a *Agent) reloadNginx(r *http.Request) error {
 	if a.systemctlPath != "" {
-		if err := a.run(r, a.systemctlPath, []string{"restart", "nginx"}); err == nil {
-			return nil
-		}
+		return a.run(r, a.systemctlPath, []string{"restart", "nginx"})
+	}
+	if err := a.checkNginx(r); err != nil {
+		return err
 	}
 	return a.run(r, a.nginxPath, []string{"-s", "reload"})
 }
@@ -271,7 +269,7 @@ func (a *Agent) reloadNginx(r *http.Request) error {
 func (a *Agent) run(r *http.Request, bin string, args []string) error {
 	out, err := runCommand(r.Context(), bin, args)
 	if err != nil {
-		a.log.Error("agent command failed", "cmd", bin, "err", err)
+		a.log.Error("agent command failed", "cmd", bin, "args", strings.Join(args, " "), "err", err, "out", truncate(string(out), 512))
 		return fmt.Errorf("%s %s failed: %s", bin, strings.Join(args, " "), truncate(string(out), 512))
 	}
 	return nil

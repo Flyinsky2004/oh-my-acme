@@ -81,6 +81,7 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	srv.TelegramReset()
 
 	// Print the one-time setup token so the admin can initialise the password.
 	if token, terr := srv.InitialSetupToken(); terr == nil && token != "" {

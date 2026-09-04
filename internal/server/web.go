@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"html/template"
 	"io/fs"
@@ -362,11 +363,53 @@ func (w *Web) certificateLogData(rw http.ResponseWriter, id string) (map[string]
 
 func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	cert := w.srv.st.State().Certificates[id]
+	if cert == nil {
+		writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+		return
+	}
+	if cert.Current == nil {
+		writeJSONErr(rw, http.StatusUnprocessableEntity, "证书尚未签发，未执行下发")
+		return
+	}
+	if cert.IssueStatus == domain.StatusRunning {
+		writeJSONErr(rw, http.StatusConflict, "证书正在签发，请稍后再下发")
+		return
+	}
+	if len(cert.TargetAgents) == 0 {
+		writeJSONErr(rw, http.StatusUnprocessableEntity, "未配置目标 Agent，未执行下发")
+		return
+	}
 	if err := w.srv.DeployAll(r.Context(), id); err != nil {
 		writeJSONErr(rw, http.StatusBadGateway, err.Error())
 		return
 	}
+	if !certificateDeploymentComplete(w.srv.st.State().Certificates[id]) {
+		writeJSONErr(rw, http.StatusConflict, "证书配置已变更，请确认后重新下发")
+		return
+	}
+	setToastTrigger(rw, "证书已成功下发到全部目标 Agent", "success")
 	w.renderCertificateRow(rw, id)
+}
+
+func setToastTrigger(rw http.ResponseWriter, message, toastType string) {
+	trigger, _ := json.Marshal(map[string]map[string]string{
+		"showToast": {"message": message, "type": toastType},
+	})
+	rw.Header().Set("HX-Trigger", string(trigger))
+}
+
+func certificateDeploymentComplete(cert *domain.Certificate) bool {
+	if cert == nil || cert.Current == nil || len(cert.TargetAgents) == 0 {
+		return false
+	}
+	for _, agentID := range cert.TargetAgents {
+		deploy := cert.Deploys[agentID]
+		if deploy == nil || deploy.Status != domain.StatusSuccess || deploy.VersionID != cert.Current.ID {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *Web) renderCertificateRow(rw http.ResponseWriter, id string) {
@@ -543,10 +586,18 @@ func (w *Web) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	if ips, err := serverIPs(); err == nil && len(ips) > 0 {
 		hostHint = ips[0].String()
 	}
+	tgTokenMasked := ""
+	if st.Config.TelegramToken != "" {
+		tgTokenMasked = MaskedToken(st.Config.TelegramToken)
+	}
+	tgStatus, tgError := w.srv.TelegramRuntimeStatus()
 	w.page(rw, r, "设置", "/settings", "settings", map[string]any{
 		"CAs": cas, "Email": st.Config.ACMEAccountEmail,
 		"RenewDays": st.Config.RenewPreferenceDays, "DNSSleep": st.Config.DNSSleepSeconds,
 		"ServerHost": st.Config.ServerHost, "HostHint": hostHint,
+		"TGEnabled": st.Config.TelegramEnabled, "TGTokenSet": st.Config.TelegramToken != "",
+		"TGTokenMasked": tgTokenMasked, "TGChatID": st.Config.TelegramChatID,
+		"TGStatus": tgStatus, "TGError": tgError,
 		"ServerVersion": Version, "ServerVersions": versions, "UpdateHint": updateHint,
 		"UpdateStatus": string(update.Status), "UpdateTarget": update.Target, "UpdateError": update.Error,
 	})
@@ -565,19 +616,87 @@ func (w *Web) handleServerUpdate(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) handleSettingsSave(rw http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, "invalid settings form")
+		return
+	}
+	chatID, err := parseTelegramChatID(r.FormValue("tg_chat_id"))
+	if err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	current := w.srv.st.State().Config
+	tgToken := strings.TrimSpace(r.FormValue("tg_token"))
+	tgEnabled := r.FormValue("tg_enabled") == "on"
+	tgClearToken := r.FormValue("tg_clear_token") == "on"
+	if tgClearToken && tgEnabled {
+		writeJSONErr(rw, http.StatusBadRequest, "请先关闭 Telegram 机器人再清除 Token")
+		return
+	}
+	effectiveToken := tgToken
+	if effectiveToken == "" && !tgClearToken {
+		effectiveToken = current.TelegramToken
+	}
+	if tgEnabled && effectiveToken == "" {
+		writeJSONErr(rw, http.StatusBadRequest, "启用 Telegram 机器人前必须配置 Bot Token")
+		return
+	}
+	if tgEnabled && !validTelegramBotToken(effectiveToken) {
+		writeJSONErr(rw, http.StatusBadRequest, "Telegram Bot Token 格式无效")
+		return
+	}
+
 	renewDays, _ := strconv.Atoi(r.FormValue("renew_days"))
 	dnsSleep, _ := strconv.Atoi(r.FormValue("dns_sleep"))
-	_ = w.srv.st.WithState(true, func(st *domain.State) error {
+	if err := w.srv.st.WithState(true, func(st *domain.State) error {
 		st.Config.ACMEAccountEmail = strings.TrimSpace(r.FormValue("email"))
 		st.Config.ServerHost = strings.TrimSpace(r.FormValue("server_host"))
 		if renewDays > 0 {
 			st.Config.RenewPreferenceDays = renewDays
 		}
 		st.Config.DNSSleepSeconds = dnsSleep
+		st.Config.TelegramEnabled = tgEnabled
+		if tgClearToken {
+			st.Config.TelegramToken = ""
+		} else if tgToken != "" {
+			st.Config.TelegramToken = tgToken
+		}
+		st.Config.TelegramChatID = chatID
 		return nil
-	})
+	}); err != nil {
+		writeJSONErr(rw, http.StatusInternalServerError, "保存设置失败")
+		return
+	}
+	w.srv.TelegramReset()
 	w.redirect(rw, r, "/settings")
+}
+
+func validTelegramBotToken(token string) bool {
+	botID, secret, ok := strings.Cut(strings.TrimSpace(token), ":")
+	if !ok || botID == "" || len(secret) < 20 {
+		return false
+	}
+	for _, char := range botID {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func parseTelegramChatID(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	chatID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, errors.New("Telegram 用户 ID 必须是整数")
+	}
+	if chatID < 0 {
+		return 0, errors.New("Telegram 仅支持私聊用户 ID，不能使用群组 Chat ID")
+	}
+	return chatID, nil
 }
 
 func (w *Web) handleCAAdd(rw http.ResponseWriter, r *http.Request) {
@@ -615,15 +734,17 @@ func mustSub(fsys fs.FS, dir string) fs.FS {
 func newID() (string, error) { return store.NewID() }
 
 type certificateRow struct {
-	ID               string
-	RootDomain       string
-	IssueStatus      string
-	IssueStatusLabel string
-	ExpiresAt        string
-	KeyType          string
-	LastError        string
-	Running          bool
-	CanDeploy        bool
+	ID                   string
+	RootDomain           string
+	IssueStatus          string
+	IssueStatusLabel     string
+	IssuedAt             string
+	ExpiresAt            string
+	KeyType              string
+	LastError            string
+	Running              bool
+	CanDeploy            bool
+	DeployDisabledReason string
 }
 
 // certificateForm holds the data shared by the new/edit certificate form. The
@@ -690,13 +811,25 @@ func makeCertificateRow(cert *domain.Certificate) certificateRow {
 		domain.StatusSuccess: "已签发", domain.StatusFailed: "失败",
 	}[cert.IssueStatus]
 	expiresAt := "—"
+	issuedAt := "—"
 	if cert.Current != nil {
+		issuedAt = cert.Current.IssuedAt.Format("2006-01-02")
 		expiresAt = cert.Current.ExpiresAt.Format("2006-01-02")
+	}
+	canDeploy := cert.Current != nil && len(cert.TargetAgents) > 0 && cert.IssueStatus != domain.StatusRunning
+	disabledReason := ""
+	if cert.Current == nil {
+		disabledReason = "请先签发证书"
+	} else if cert.IssueStatus == domain.StatusRunning {
+		disabledReason = "证书正在签发"
+	} else if len(cert.TargetAgents) == 0 {
+		disabledReason = "未配置目标 Agent"
 	}
 	return certificateRow{
 		ID: cert.ID, RootDomain: cert.RootDomain,
 		IssueStatus: string(cert.IssueStatus), IssueStatusLabel: label,
-		ExpiresAt: expiresAt, KeyType: string(cert.KeyType), LastError: cert.LastError,
-		Running: cert.IssueStatus == domain.StatusRunning, CanDeploy: cert.Current != nil,
+		IssuedAt: issuedAt, ExpiresAt: expiresAt, KeyType: string(cert.KeyType), LastError: cert.LastError,
+		Running: cert.IssueStatus == domain.StatusRunning, CanDeploy: canDeploy,
+		DeployDisabledReason: disabledReason,
 	}
 }

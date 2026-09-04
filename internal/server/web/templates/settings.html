@@ -110,6 +110,30 @@
           <input id="server-host" name="server_host" value="{{.ServerHost}}" placeholder="{{.HostHint}}" aria-describedby="server-host-hint">
           <span class="hint" id="server-host-hint">用于生成 Agent 安装命令；留空则自动探测，探测不准时可手动填写公网 IP 或域名。</span>
         </div>
+        <div class="field field-full">
+          <div class="panel-header">
+            <div>
+              <h3>Telegram Bot</h3>
+              <p class="muted">通过 Telegram 菜单查看状态、管理证书和 Agent。默认关闭，仅允许指定用户的私聊操作。</p>
+              {{if eq .TGStatus "running"}}<p><span class="badge success">运行中</span></p>
+              {{else if eq .TGStatus "starting"}}<p><span class="badge running">正在连接</span></p>
+              {{else if eq .TGStatus "failed"}}<p><span class="badge failed">连接失败</span> <span class="hint">{{.TGError}}</span></p>
+              {{else}}<p><span class="badge">已关闭</span></p>{{end}}
+            </div>
+          </div>
+        </div>
+        <label class="checkbox-field field-full" for="tg-enabled"><input id="tg-enabled" type="checkbox" name="tg_enabled" {{if .TGEnabled}}checked{{end}}><span>启用 Telegram 机器人</span></label>
+        <div class="field">
+          <label class="field-label" for="tg-token">Bot Token</label>
+          <input id="tg-token" name="tg_token" type="password" value="" placeholder="{{.TGTokenMasked}}" autocomplete="off" aria-describedby="tg-token-hint">
+          <span class="hint" id="tg-token-hint">从 @BotFather 获取；留空则保留现有 Token。当前：{{if .TGTokenSet}}已配置{{else}}未配置{{end}}。</span>
+        </div>
+        <div class="field">
+          <label class="field-label" for="tg-chat-id">允许的 Telegram 用户 ID</label>
+          <input id="tg-chat-id" name="tg_chat_id" type="number" inputmode="numeric" min="0" value="{{.TGChatID}}" aria-describedby="tg-chat-id-hint">
+          <span class="hint" id="tg-chat-id-hint">0 表示尚未授权。请私聊机器人并发送 /start，机器人会回复用户 ID；群组 Chat ID 不受支持。</span>
+        </div>
+        <label class="checkbox-field field-full" for="tg-clear-token"><input id="tg-clear-token" type="checkbox" name="tg_clear_token"><span>关闭机器人并清除本机保存的 Bot Token</span></label>
       </div>
       <div class="form-actions"><button type="submit">保存</button></div>
     </form>

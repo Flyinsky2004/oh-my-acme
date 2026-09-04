@@ -40,12 +40,27 @@
         <option value="rsa-4096" {{if eq $.KeyType "rsa-4096"}}selected{{end}}>RSA-4096</option>
       </select>
     </div>
-    <div class="field">
-      <label class="field-label" for="target-agents">目标 Agent</label>
-      <select id="target-agents" name="agents" multiple aria-describedby="agents-hint">
-        {{range .Agents}}<option value="{{.ID}}" {{if index $.Selected .ID}}selected{{end}}>{{.Name}} ({{.Address}})</option>{{end}}
-      </select>
-      <span class="hint" id="agents-hint">可多选；签发成功后可向这些 Agent 下发证书。</span>
+    <div class="field field-full">
+      <span class="field-label">目标 Agent</span>
+      <div class="dual-list" id="agent-picker">
+        <div class="dual-panel">
+          <span class="dual-panel-title">可选</span>
+          <select class="dual-select" id="agents-available" multiple aria-label="可选 Agent">
+            {{range .Agents}}{{if not (index $.Selected .ID)}}<option value="{{.ID}}">{{.Name}} ({{.Address}})</option>{{end}}{{end}}
+          </select>
+        </div>
+        <div class="dual-controls" role="group" aria-label="移动 Agent">
+          <button type="button" class="dual-move" data-dir="right" aria-label="选入右侧" title="选入 →">→</button>
+          <button type="button" class="dual-move" data-dir="left" aria-label="移回左侧" title="← 移回">←</button>
+        </div>
+        <div class="dual-panel">
+          <span class="dual-panel-title">已选</span>
+          <select class="dual-select" id="agents-selected" name="agents" multiple aria-label="已选 Agent">
+            {{range .Agents}}{{if index $.Selected .ID}}<option value="{{.ID}}" selected>{{.Name}} ({{.Address}})</option>{{end}}{{end}}
+          </select>
+        </div>
+      </div>
+      <span class="hint" id="agents-hint">从左侧「可选」选入需接收证书的 Agent；签发成功后可向这些 Agent 下发证书。</span>
     </div>
     {{if .Edit}}
     <label class="checkbox-field field-full" for="cert-enabled"><input id="cert-enabled" type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}><span>启用此证书（自动续期）</span></label>
@@ -53,4 +68,44 @@
   </div>
   <div class="form-actions"><a class="button button-secondary" href="/certificates">取消</a><button type="submit">{{if .Edit}}保存修改{{else}}保存证书{{end}}</button></div>
 </form>
+<script>
+(function () {
+  var picker = document.getElementById('agent-picker');
+  if (!picker) return;
+  var form = picker.closest('form');
+  var left = document.getElementById('agents-available');
+  var right = document.getElementById('agents-selected');
+  var rightBtn = picker.querySelector('[data-dir="right"]');
+  var leftBtn = picker.querySelector('[data-dir="left"]');
+
+  function updateButtons() {
+    rightBtn.disabled = left.selectedOptions.length === 0;
+    leftBtn.disabled = right.selectedOptions.length === 0;
+  }
+
+  picker.addEventListener('click', function (e) {
+    var btn = e.target.closest('.dual-move');
+    if (!btn) return;
+    var toRight = btn.dataset.dir === 'right';
+    var src = toRight ? left : right;
+    var dst = toRight ? right : left;
+    var opts = Array.prototype.slice.call(src.selectedOptions);
+    if (opts.length === 0) return;
+    opts.forEach(function (o) {
+      o.selected = toRight; // only the right panel is submitted via name="agents"
+      dst.appendChild(o);
+    });
+    updateButtons();
+  });
+
+  left.addEventListener('change', updateButtons);
+  right.addEventListener('change', updateButtons);
+  form.addEventListener('submit', function () {
+    Array.prototype.forEach.call(right.options, function (option) {
+      option.selected = true;
+    });
+  });
+  updateButtons();
+})();
+</script>
 {{end}}

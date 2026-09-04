@@ -93,6 +93,7 @@ type Server struct {
 
 	acmeSvc      *acme.Service
 	serverLeafFP string // SHA-256 of the server's TLS leaf cert (agent pin)
+	tg           *TelegramController
 
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -151,6 +152,7 @@ func New(cfg Config, log *slog.Logger, st *store.Store, ca *pki.CA, clientCert *
 		restartCh:    make(chan struct{}, 1),
 	}
 	s.ensureDefaults()
+	s.tg = newTelegramController(s)
 	return s, nil
 }
 
@@ -172,6 +174,23 @@ func (s *Server) RequestRestart() {
 	case s.restartCh <- struct{}{}:
 	default:
 	}
+}
+
+// TelegramReset reconciles the Telegram bot against the persisted config. It is
+// called on startup and whenever the settings are saved, so enabling/disabling
+// or changing the token takes effect without a full restart.
+func (s *Server) TelegramReset() {
+	if s.tg != nil {
+		s.tg.Reconcile()
+	}
+}
+
+// TelegramRuntimeStatus reports the sanitized state of the optional bot.
+func (s *Server) TelegramRuntimeStatus() (status, message string) {
+	if s.tg == nil {
+		return "disabled", ""
+	}
+	return s.tg.runtimeStatus()
 }
 
 // Go starts lifecycle-bound background work tracked for shutdown.

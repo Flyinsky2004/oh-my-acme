@@ -50,8 +50,15 @@ type SystemConfig struct {
 	ServerConnectTimeoutSeconds int     `json:"server_connect_timeout_seconds"`
 	// ServerHost is the externally reachable host/IP used in generated Agent
 	// install commands. Empty means auto-detect from local interfaces.
-	ServerHost string    `json:"server_host,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	ServerHost string `json:"server_host,omitempty"`
+	// TelegramBot settings. TelegramEnabled defaults to false (disabled). The
+	// token is stored like other secrets (plaintext in state.json, acme.sh
+	// style); TelegramChatID (0 = unset) is the positive user ID of the single
+	// private chat allowed to drive the bot. Group chats are never authorized.
+	TelegramEnabled bool      `json:"telegram_enabled"`
+	TelegramToken   string    `json:"telegram_token"`
+	TelegramChatID  int64     `json:"telegram_chat_id"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // ACMECA describes an ACME Certificate Authority endpoint.

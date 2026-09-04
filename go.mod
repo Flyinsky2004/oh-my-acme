@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/cloudflare/cloudflare-go/v4 v4.6.0
+	github.com/go-telegram/bot v1.25.0
 	golang.org/x/crypto v0.56.0
 )
 

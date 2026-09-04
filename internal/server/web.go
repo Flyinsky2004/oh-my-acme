@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -50,6 +51,9 @@ func (w *Web) Handler() http.Handler {
 	mux.Handle("GET /certificates", w.auth(w.handleCertificates))
 	mux.Handle("GET /certificates/new", w.auth(w.handleCertificateNew))
 	mux.Handle("POST /certificates", w.auth(w.handleCertificateCreate))
+	mux.Handle("GET /certificates/{id}/edit", w.auth(w.handleCertificateEdit))
+	mux.Handle("POST /certificates/{id}", w.auth(w.handleCertificateUpdate))
+	mux.Handle("POST /certificates/{id}/delete", w.auth(w.handleCertificateDelete))
 	mux.Handle("POST /certificates/{id}/issue", w.auth(w.handleIssue))
 	mux.Handle("GET /certificates/{id}/row", w.auth(w.handleCertificateRow))
 	mux.Handle("GET /certificates/{id}/log", w.auth(w.handleCertificateLog))
@@ -250,23 +254,48 @@ func (w *Web) handleCertificates(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) handleCertificateNew(rw http.ResponseWriter, r *http.Request) {
-	st := w.srv.st.State()
-	creds := []map[string]any{}
-	for _, c := range st.Credentials {
-		creds = append(creds, map[string]any{"ID": c.ID, "Name": c.Name})
+	w.page(rw, r, "新建证书", "/certificates", "certnew", w.certificateForm(w.srv.st.State(), nil))
+}
+
+func (w *Web) handleCertificateEdit(rw http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cert := w.srv.st.State().Certificates[id]
+	if cert == nil {
+		writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+		return
 	}
-	cas := []map[string]any{}
-	for _, c := range st.CAs {
-		isDefault := c.ID == st.Config.DefaultACMEID
-		cas = append(cas, map[string]any{"ID": c.ID, "Name": c.Name, "Default": isDefault})
+	w.page(rw, r, "编辑证书", "/certificates", "certnew", w.certificateForm(w.srv.st.State(), cert))
+}
+
+func (w *Web) handleCertificateUpdate(rw http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
 	}
-	agents := []map[string]any{}
-	for _, a := range st.Agents {
-		agents = append(agents, map[string]any{"ID": a.ID, "Name": a.Name, "Address": a.Address})
+	enabled := r.FormValue("enabled") == "on"
+	err := w.srv.UpdateCertificate(r.PathValue("id"), r.FormValue("root"), r.FormValue("credential_id"),
+		r.FormValue("acme_id"), domain.KeyType(r.FormValue("key_type")), enabled, r.Form["agents"])
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+			return
+		}
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
 	}
-	w.page(rw, r, "新建证书", "/certificates", "certnew", map[string]any{
-		"Credentials": creds, "CAs": cas, "Agents": agents,
-	})
+	w.redirect(rw, r, "/certificates")
+}
+
+func (w *Web) handleCertificateDelete(rw http.ResponseWriter, r *http.Request) {
+	if err := w.srv.DeleteCertificate(r.PathValue("id")); err != nil {
+		if errors.Is(err, errNotFound) {
+			writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+			return
+		}
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.redirect(rw, r, "/certificates")
 }
 
 func (w *Web) handleCertificateCreate(rw http.ResponseWriter, r *http.Request) {
@@ -510,9 +539,14 @@ func (w *Web) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	if versionErr != nil {
 		updateHint = versionErr.Error()
 	}
+	hostHint := ""
+	if ips, err := serverIPs(); err == nil && len(ips) > 0 {
+		hostHint = ips[0].String()
+	}
 	w.page(rw, r, "设置", "/settings", "settings", map[string]any{
 		"CAs": cas, "Email": st.Config.ACMEAccountEmail,
 		"RenewDays": st.Config.RenewPreferenceDays, "DNSSleep": st.Config.DNSSleepSeconds,
+		"ServerHost": st.Config.ServerHost, "HostHint": hostHint,
 		"ServerVersion": Version, "ServerVersions": versions, "UpdateHint": updateHint,
 		"UpdateStatus": string(update.Status), "UpdateTarget": update.Target, "UpdateError": update.Error,
 	})
@@ -536,6 +570,7 @@ func (w *Web) handleSettingsSave(rw http.ResponseWriter, r *http.Request) {
 	dnsSleep, _ := strconv.Atoi(r.FormValue("dns_sleep"))
 	_ = w.srv.st.WithState(true, func(st *domain.State) error {
 		st.Config.ACMEAccountEmail = strings.TrimSpace(r.FormValue("email"))
+		st.Config.ServerHost = strings.TrimSpace(r.FormValue("server_host"))
 		if renewDays > 0 {
 			st.Config.RenewPreferenceDays = renewDays
 		}
@@ -589,6 +624,64 @@ type certificateRow struct {
 	LastError        string
 	Running          bool
 	CanDeploy        bool
+}
+
+// certificateForm holds the data shared by the new/edit certificate form. The
+// same template renders both: .Edit distinguishes the two, and .Selected carries
+// the already-targeted agents so the multi-select can pre-check them.
+type certificateForm struct {
+	Edit         bool
+	ID           string
+	RootDomain   string
+	CredentialID string
+	ACMEID       string
+	KeyType      string
+	Enabled      bool
+	Selected     map[string]bool
+	Credentials  []credOption
+	CAs          []caView
+	Agents       []agentView
+}
+
+// credOption is a Cloudflare credential option in the certificate form.
+type credOption struct{ ID, Name string }
+
+// caView is an ACME CA option; Default is the config-level default CA.
+type caView struct {
+	ID, Name string
+	Default  bool
+}
+
+// agentView is an Agent option in the certificate form.
+type agentView struct{ ID, Name, Address string }
+
+func (w *Web) certificateForm(st domain.State, cert *domain.Certificate) certificateForm {
+	form := certificateForm{
+		Credentials: []credOption{}, CAs: []caView{}, Agents: []agentView{},
+		Selected: map[string]bool{},
+	}
+	for _, c := range st.Credentials {
+		form.Credentials = append(form.Credentials, credOption{ID: c.ID, Name: c.Name})
+	}
+	for _, c := range st.CAs {
+		form.CAs = append(form.CAs, caView{ID: c.ID, Name: c.Name, Default: c.ID == st.Config.DefaultACMEID})
+	}
+	for _, a := range st.Agents {
+		form.Agents = append(form.Agents, agentView{ID: a.ID, Name: a.Name, Address: a.Address})
+	}
+	if cert != nil {
+		form.Edit = true
+		form.ID = cert.ID
+		form.RootDomain = cert.RootDomain
+		form.CredentialID = cert.CredentialID
+		form.ACMEID = cert.ACMEID
+		form.KeyType = string(cert.KeyType)
+		form.Enabled = cert.Enabled
+		for _, aid := range cert.TargetAgents {
+			form.Selected[aid] = true
+		}
+	}
+	return form
 }
 
 func makeCertificateRow(cert *domain.Certificate) certificateRow {

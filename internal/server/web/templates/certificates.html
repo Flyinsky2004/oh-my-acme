@@ -15,6 +15,10 @@
     {{end}}
     <button type="button" class="secondary" hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" {{if not .CanDeploy}}disabled{{end}}>下发</button>
     <a class="button button-ghost" href="/certificates/{{.ID}}/log">日志</a>
+    {{if not .Running}}
+      <a class="button button-ghost" href="/certificates/{{.ID}}/edit">编辑</a>
+      <button type="button" class="button-danger" hx-post="/certificates/{{.ID}}/delete" hx-confirm="删除该证书？">删除</button>
+    {{end}}
   </div></td>
 </tr>
 {{end}}

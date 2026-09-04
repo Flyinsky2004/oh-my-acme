@@ -64,6 +64,66 @@ func (s *Server) CreateCertificate(root, credID, caID string, keyType domain.Key
 	return id, nil
 }
 
+// UpdateCertificate edits an existing certificate's configuration. The issued
+// version (if any) is left in place so already-deployed certs stay valid; a
+// re-issue after the edit applies the new settings to the target agents.
+func (s *Server) UpdateCertificate(id, root, credID, caID string, keyType domain.KeyType, enabled bool, targetAgents []string) error {
+	root = normalizeDomain(root)
+	if !validDomain(root) {
+		return fmt.Errorf("invalid root domain %q", root)
+	}
+	return s.st.WithState(true, func(st *domain.State) error {
+		cert := st.Certificates[id]
+		if cert == nil {
+			return errNotFound
+		}
+		if cert.IssueStatus == domain.StatusRunning {
+			return errors.New("certificate is currently issuing, cannot edit")
+		}
+		if keyType == "" {
+			keyType = st.Config.DefaultKeyType
+		}
+		if _, ok := st.CAs[caID]; !ok {
+			return fmt.Errorf("acme ca %q not found", caID)
+		}
+		if _, ok := st.Credentials[credID]; !ok {
+			return fmt.Errorf("cloudflare credential %q not found", credID)
+		}
+		cert.RootDomain = root
+		cert.SanDomains = []string{root, "*." + root}
+		cert.CredentialID = credID
+		cert.ACMEID = caID
+		cert.KeyType = keyType
+		cert.Enabled = enabled
+		cert.TargetAgents = append([]string(nil), targetAgents...)
+		return nil
+	})
+}
+
+// DeleteCertificate removes a certificate from state, cleans up its on-disk PEM
+// blobs and drops any tasks that were created for it.
+func (s *Server) DeleteCertificate(id string) error {
+	if err := s.st.WithState(true, func(st *domain.State) error {
+		cert := st.Certificates[id]
+		if cert == nil {
+			return errNotFound
+		}
+		if cert.IssueStatus == domain.StatusRunning {
+			return errors.New("certificate is currently issuing, cannot delete")
+		}
+		delete(st.Certificates, id)
+		for taskID, task := range st.Tasks {
+			if task.CertID == id {
+				delete(st.Tasks, taskID)
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return s.st.RemoveCert(id)
+}
+
 const (
 	taskTypeIssue = "issue"
 	taskTypeRenew = "renew"

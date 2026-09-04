@@ -105,6 +105,11 @@
           <input id="dns-sleep" name="dns_sleep" type="number" min="0" value="{{.DNSSleep}}" aria-describedby="dns-sleep-hint">
           <span class="hint" id="dns-sleep-hint">填写 0 时由系统自动检测。</span>
         </div>
+        <div class="field field-full">
+          <label class="field-label" for="server-host">Server Host / IP</label>
+          <input id="server-host" name="server_host" value="{{.ServerHost}}" placeholder="{{.HostHint}}" aria-describedby="server-host-hint">
+          <span class="hint" id="server-host-hint">用于生成 Agent 安装命令；留空则自动探测，探测不准时可手动填写公网 IP 或域名。</span>
+        </div>
       </div>
       <div class="form-actions"><button type="submit">保存</button></div>
     </form>

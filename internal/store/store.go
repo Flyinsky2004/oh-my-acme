@@ -259,6 +259,16 @@ func (s *Store) RemoveCertVersion(certID, versionID string) error {
 	return os.RemoveAll(s.certDir(certID, versionID))
 }
 
+// RemoveCert deletes the whole on-disk directory for a certificate — all issued
+// version blobs and the issuance log. Callers should have already removed the
+// certificate from state; this cleans up its PEM files.
+func (s *Store) RemoveCert(certID string) error {
+	if err := validateID(certID); err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(s.dataDir, "certs", certID))
+}
+
 // ReadCertPEM loads the cert/ca/fullchain/privkey bytes for a version. First
 // return is cert, then ca, fullchain, privkey.
 func (s *Store) ReadCertVersion(v domain.CertificateVersion) (cert, ca, fullchain, privkey []byte, err error) {

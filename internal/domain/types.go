@@ -36,19 +36,22 @@ const (
 
 // SystemConfig holds the server-wide settings persisted in state.json.
 type SystemConfig struct {
-	WebListen                   string    `json:"web_listen"`
-	WebPort                     int       `json:"web_port"`
-	AgentControlListen          string    `json:"agent_control_listen"`
-	AgentControlPort            int       `json:"agent_control_port"`
-	DefaultACMEID               string    `json:"default_acme_id"`
-	ACMEAccountEmail            string    `json:"acme_account_email"`
-	DefaultKeyType              KeyType   `json:"default_key_type"`
-	RenewPreferenceDays         int       `json:"renew_preference_days"` // target days before expiry to renew
-	RenewCheckInterval          string    `json:"renew_check_interval"`  // e.g. "24h"
-	DNSSleepSeconds             int       `json:"dns_sleep_seconds"`     // 0 => automatic DNS propagation check
-	MaxAgentDeployRetries       int       `json:"max_agent_deploy_retries"`
-	ServerConnectTimeoutSeconds int       `json:"server_connect_timeout_seconds"`
-	CreatedAt                   time.Time `json:"created_at"`
+	WebListen                   string  `json:"web_listen"`
+	WebPort                     int     `json:"web_port"`
+	AgentControlListen          string  `json:"agent_control_listen"`
+	AgentControlPort            int     `json:"agent_control_port"`
+	DefaultACMEID               string  `json:"default_acme_id"`
+	ACMEAccountEmail            string  `json:"acme_account_email"`
+	DefaultKeyType              KeyType `json:"default_key_type"`
+	RenewPreferenceDays         int     `json:"renew_preference_days"` // target days before expiry to renew
+	RenewCheckInterval          string  `json:"renew_check_interval"`  // e.g. "24h"
+	DNSSleepSeconds             int     `json:"dns_sleep_seconds"`     // 0 => automatic DNS propagation check
+	MaxAgentDeployRetries       int     `json:"max_agent_deploy_retries"`
+	ServerConnectTimeoutSeconds int     `json:"server_connect_timeout_seconds"`
+	// ServerHost is the externally reachable host/IP used in generated Agent
+	// install commands. Empty means auto-detect from local interfaces.
+	ServerHost string    `json:"server_host,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // ACMECA describes an ACME Certificate Authority endpoint.

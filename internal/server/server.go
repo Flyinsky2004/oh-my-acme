@@ -36,13 +36,17 @@ func (s *Server) setupPending() bool {
 // installer from its own immutable GitHub Release and pins the Agent to the
 // same version, avoiding protocol drift. Development builds use main/latest.
 func (s *Server) AgentInstallCommand(name, token string) string {
-	ips, err := serverIPs()
-	if err != nil {
-		return ""
-	}
-	host := "127.0.0.1"
-	if len(ips) > 0 {
-		host = ips[0].String()
+	host := strings.TrimSpace(s.st.State().Config.ServerHost)
+	if host == "" {
+		// Fall back to auto-detecting the first non-loopback address.
+		ips, err := serverIPs()
+		if err != nil {
+			return ""
+		}
+		host = "127.0.0.1"
+		if len(ips) > 0 {
+			host = ips[0].String()
+		}
 	}
 	control := fmt.Sprintf("https://%s:%d", host, s.cfg.ControlPort)
 	installerURL := "https://raw.githubusercontent.com/Flyinsky2004/oh-my-acme/main/agent/install.sh"

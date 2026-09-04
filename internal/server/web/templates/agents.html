@@ -24,8 +24,9 @@
         <h2 id="install-command-title">安装命令</h2>
         <p class="muted">一次性 Token 有效 10 分钟；Agent 会主动上报自己的 IP 与端口。</p>
       </div>
+      <button type="button" class="button button-secondary copy-button" data-copy-target="install-command-code" aria-label="复制安装命令">{{template "icon-copy"}}<span>复制</span></button>
     </div>
-    <pre><code>{{.InstallCommand}}</code></pre>
+    <pre><code id="install-command-code">{{.InstallCommand}}</code></pre>
   </section>
   {{end}}
 
@@ -86,4 +87,43 @@
   <div class="glass-panel empty-state"><div class="empty-state-inner"><span class="empty-icon">{{template "icon-agents"}}</span><h2>还没有 Agent</h2><p>生成安装命令后，在目标服务器执行即可完成注册。</p></div></div>
   {{end}}
 </div>
+<script>
+(function () {
+  function copyText(text, done) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      return;
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    done(ok);
+  }
+  document.querySelectorAll('.copy-button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var target = document.getElementById(btn.getAttribute('data-copy-target'));
+      if (!target) { return; }
+      var label = btn.querySelector('span') || btn;
+      var original = btn.getAttribute('data-original') || label.textContent;
+      btn.setAttribute('data-original', original);
+      copyText(target.innerText, function (ok) {
+        label.textContent = ok ? '已复制' : '复制失败';
+        btn.setAttribute('aria-label', ok ? '已复制' : '复制失败');
+        setTimeout(function () {
+          label.textContent = original;
+          btn.setAttribute('aria-label', '复制安装命令');
+        }, 1600);
+      });
+    });
+  });
+})();
+</script>
 {{end}}

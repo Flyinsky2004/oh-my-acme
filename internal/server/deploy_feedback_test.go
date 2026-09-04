@@ -127,6 +127,11 @@ func TestHandleDeployStartsAsyncWhenTargetAgentDoesNotExist(t *testing.T) {
 	if got := trigger["showToast"]["message"]; got != "已开始异步下发到目标 Agent" {
 		t.Fatalf("showToast message = %q", got)
 	}
+	for _, b := range []byte(rw.Header().Get("HX-Trigger")) {
+		if b >= 0x80 {
+			t.Fatalf("HX-Trigger contains non-ASCII byte 0x%x", b)
+		}
+	}
 	waitCertificateDeploy(t, web.srv, "cert1", domain.StatusFailed)
 	cert := st.State().Certificates["cert1"]
 	deploy := cert.Deploys["missing-agent"]

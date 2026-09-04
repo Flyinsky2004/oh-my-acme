@@ -16,7 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,9 +32,10 @@ import (
 // Registration bundles the local identity material produced during
 // registration so the CLI can persist it.
 type Registration struct {
-	AgentID string
-	CertPEM []byte
-	CAPEM   []byte // the internal CA (trust anchor for the server's client cert)
+	AgentID  string
+	CertPEM  []byte
+	CAPEM    []byte // the internal CA (trust anchor for the server's client cert)
+	ServerIP string // actual peer address used by the successful registration
 }
 
 // GenerateKeyAndCSR produces the agent's own EC key (kept locally) and a CSR
@@ -98,6 +101,14 @@ func Register(ctx context.Context, serverURL, token, agentID, name string, port 
 	if err != nil {
 		return nil, err
 	}
+	var serverIP string
+	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		host, _, splitErr := net.SplitHostPort(info.Conn.RemoteAddr().String())
+		if splitErr == nil {
+			serverIP = host
+		}
+	}}
+	httpReq = httpReq.WithContext(httptrace.WithClientTrace(httpReq.Context(), trace))
 	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := hc.Do(httpReq)
 	if err != nil {
@@ -113,7 +124,10 @@ func Register(ctx context.Context, serverURL, token, agentID, name string, port 
 	if err := json.Unmarshal(respBody, &reg); err != nil {
 		return nil, err
 	}
-	return &Registration{AgentID: reg.AgentID, CertPEM: []byte(reg.CertPEM), CAPEM: []byte(reg.ServerCAPEM)}, nil
+	if serverIP == "" {
+		return nil, errors.New("registration succeeded but Server peer IP was unavailable")
+	}
+	return &Registration{AgentID: reg.AgentID, CertPEM: []byte(reg.CertPEM), CAPEM: []byte(reg.ServerCAPEM), ServerIP: serverIP}, nil
 }
 
 // SaveIdentity writes the agent's identity certificate and the CA trust anchor

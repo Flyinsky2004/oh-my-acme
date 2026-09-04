@@ -42,6 +42,10 @@
     --disabled: #6b7280;
     --disabled-bg: rgba(107, 114, 128, 0.13);
     --focus: #4b5563;
+    --selection-ink: #111827;
+    --selection-bg: #cbd5e1;
+    --code-selection-ink: #0b1220;
+    --code-selection-bg: #bfdbfe;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -72,6 +76,10 @@
       --disabled: #9aa0a7;
       --disabled-bg: rgba(154, 160, 167, 0.13);
       --focus: #cdd4da;
+      --selection-ink: #f8fafc;
+      --selection-bg: #475569;
+      --code-selection-ink: #0b1220;
+      --code-selection-bg: #bfdbfe;
     }
   }
 
@@ -156,8 +164,8 @@
   }
 
   ::selection {
-    color: var(--ink);
-    background: var(--cyan-soft);
+    color: var(--selection-ink);
+    background: var(--selection-bg);
   }
 }
 
@@ -814,6 +822,14 @@
     background: transparent;
     border: 0;
     font-size: 0.8rem;
+  }
+
+  code::selection,
+  pre::selection,
+  pre *::selection {
+    color: var(--code-selection-ink);
+    text-shadow: none;
+    background: var(--code-selection-bg);
   }
 
   .badge {

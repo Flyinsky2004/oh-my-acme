@@ -87,3 +87,16 @@ func TestCompiledCSSHasNoRemoteDependencies(t *testing.T) {
 		}
 	}
 }
+
+func TestCompiledCSSKeepsCodeSelectionReadable(t *testing.T) {
+	body, err := fs.ReadFile(staticFS, "web/static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(body)
+	for _, want := range []string{"--code-selection-ink:", "--code-selection-bg:", "code::selection", "pre::selection"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("compiled CSS does not contain %q", want)
+		}
+	}
+}

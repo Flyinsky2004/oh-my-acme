@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"html/template"
 	"io/fs"
@@ -439,10 +438,12 @@ func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {
 }
 
 func setToastTrigger(rw http.ResponseWriter, message, toastType string) {
-	trigger, _ := json.Marshal(map[string]map[string]string{
-		"showToast": {"message": message, "type": toastType},
-	})
-	rw.Header().Set("HX-Trigger", string(trigger))
+	// Response headers are not guaranteed to preserve raw UTF-8 through every
+	// proxy/browser stack. Quote strings as ASCII JSON escapes so HTMX's
+	// JSON.parse reconstructs the original Unicode message without mojibake.
+	trigger := `{"showToast":{"message":` + strconv.QuoteToASCII(message) +
+		`,"type":` + strconv.QuoteToASCII(toastType) + `}}`
+	rw.Header().Set("HX-Trigger", trigger)
 }
 
 func certificateDeploymentComplete(cert *domain.Certificate) bool {

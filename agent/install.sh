@@ -7,7 +7,8 @@
 # (server URL, one-time token, pinned CA fingerprint) and a hardened systemd
 # unit, then enables and starts the service. On first start the agent generates
 # a private key + CSR and registers with the server control port over a pinned
-# CA fingerprint; the one-time token is then cleared from config.json.
+# CA fingerprint. The connected Server IP is recorded as an inbound API
+# allowlist, and the one-time token is then cleared from config.json.
 #
 # Usage:
 #   sudo ./install.sh -server https://SRV:9444 -token XXX -ca-fingerprint SHA256:XXX
@@ -101,6 +102,7 @@ if [ ! -f "${INSTALL_DIR}/config.json" ]; then
   "cert_dir": "${INSTALL_DIR}/certs",
   "log_dir": "${INSTALL_DIR}/logs",
   "server_url": "${SERVER_URL}",
+  "allowed_server_cidrs": [],
   "name": "${NAME}",
   "token": "${TOKEN}",
   "ca_fingerprint": "${CA_FINGERPRINT}"

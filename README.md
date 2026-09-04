@@ -30,6 +30,13 @@ go run ./cmd/server -config ./server/config.example.json
 
 `v0.1.0` 本身没有更新接口，因此从 `v0.1.0` 迁移到第一个支持 Web 更新的版本时，Server 和现有 Agent 都需要最后手动运行一次新版安装脚本。现有 Agent 已有 `config.json` 时只需传 `-version`，不需要重新注册；之后的版本才能通过 Web UI 升级。
 
+## Agent 来源限制
+
+Agent 首次注册成功后会把实际连接到的 Server IP 记录为精确的
+`allowed_server_cidrs`（IPv4 `/32`、IPv6 `/128`），并在 TLS 握手前拒绝其他来源。
+旧版配置升级后会从 `server_url` 解析并持久化当前地址。Server 有多个出口地址时，
+可在 Agent 的 `config.json` 中配置多个 IP 或 CIDR；Server IP 变更时需要先更新该列表并重启 Agent。
+
 ## Web UI 样式
 
 部署运行、普通 `go build` 和 GitHub Release 都使用仓库中已提交的 `internal/server/web/static/app.css`，不需要 Node、npm、CDN 或在线字体。只有修改 Tailwind 源文件 `internal/server/web/styles/app.css` 时才需要 Node 22 开发工具：

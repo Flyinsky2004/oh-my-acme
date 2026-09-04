@@ -87,6 +87,11 @@ type Config struct {
 	AgentID   string `json:"agent_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 
+	// AllowedServerCIDRs limits which source addresses may reach the Agent's
+	// TLS listener. The first successful registration records the actual Server
+	// peer address; existing installations derive it once from ServerURL.
+	AllowedServerCIDRs []string `json:"allowed_server_cidrs,omitempty"`
+
 	// Identity material for mTLS (agent presents its own server identity; it
 	// verifies the server's client cert against ServerCAFile).
 	CAFile       string `json:"ca_file"`        // issuing CA for agent chain (also trust anchor)

@@ -61,6 +61,19 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 		}
 		cfg.FillDefaults()
 	}
+	if len(cfg.AllowedServerCIDRs) == 0 {
+		resolveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		allowed, resolveErr := agent.ServerCIDRsFromURL(resolveCtx, cfg.ServerURL)
+		cancel()
+		if resolveErr != nil {
+			return fmt.Errorf("initialize Server IP allowlist: %w", resolveErr)
+		}
+		cfg.AllowedServerCIDRs = allowed
+		if err := agent.SaveConfig(configPath, cfg); err != nil {
+			return fmt.Errorf("persist Server IP allowlist: %w", err)
+		}
+		log.Warn("initialized Server IP allowlist from server_url", "allowed_server_cidrs", strings.Join(allowed, ","))
+	}
 
 	a, err := agent.New(cfg, log)
 	if err != nil {
@@ -75,6 +88,11 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	ln, err = agent.RestrictListener(ln, cfg.AllowedServerCIDRs, log)
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("configure Server IP allowlist: %w", err)
 	}
 	ln = tlsListener(ln, tlsCfg)
 
@@ -133,6 +151,11 @@ func register(ctx context.Context, configPath string, cfg agent.Config) error {
 	cfg.AgentID = reg.AgentID
 	cfg.Name = name
 	cfg.Token = "" // one-time; clear it
+	serverCIDR, err := agent.ExactServerCIDR(reg.ServerIP)
+	if err != nil {
+		return err
+	}
+	cfg.AllowedServerCIDRs = []string{serverCIDR}
 	if err := agent.SaveIdentity(cfg, reg, keyPEM); err != nil {
 		return err
 	}

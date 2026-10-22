@@ -1,6 +1,6 @@
 module github.com/Flyinsky2004/oh-my-acme
 
-go 1.26.0
+go 1.27.3
 
 require (
 	github.com/cloudflare/cloudflare-go/v4 v4.6.0

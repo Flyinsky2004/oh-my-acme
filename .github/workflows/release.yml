@@ -1,9 +1,8 @@
 name: release
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -18,6 +17,8 @@ jobs:
           - goarch: arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - uses: actions/setup-go@v5
         with:
@@ -64,6 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -88,7 +91,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          draft: false
+          tag_name: ${{ github.event.release.tag_name }}
           files: |
             dist/*.tar.gz
             dist/install-server.sh

@@ -26,7 +26,7 @@ type Web struct {
 
 // NewWeb builds the Web handler, parsing the embedded templates.
 func NewWeb(s *Server) (*Web, error) {
-	tmpl, err := template.ParseFS(templatesFS, "web/templates/*.html")
+	tmpl, err := parseWebTemplates()
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,10 @@ func (w *Web) Handler() http.Handler {
 	// Static assets. Register with a method so it is unambiguous against the
 	// method-specific catch-all "GET /" (much more specific path wins).
 	fileSrv := http.FileServer(http.FS(mustSub(staticFS, "web/static")))
-	mux.Handle("GET /static/", http.StripPrefix("/static/", fileSrv))
+	mux.Handle("GET /static/", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Cache-Control", "no-cache")
+		http.StripPrefix("/static/", fileSrv).ServeHTTP(rw, r)
+	}))
 
 	mux.HandleFunc("GET /login", w.handleLoginPage)
 	mux.HandleFunc("POST /login", w.handleLoginPost)

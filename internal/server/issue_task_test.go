@@ -2,7 +2,6 @@ package server
 
 import (
 	"errors"
-	"html/template"
 	"strings"
 	"testing"
 	"time"
@@ -104,7 +103,7 @@ func TestClaimIssueBlockedWhileDeploying(t *testing.T) {
 }
 
 func TestCertificateRowPollsOnlyWhileRunning(t *testing.T) {
-	tmpl, err := template.ParseFS(templatesFS, "web/templates/*.html")
+	tmpl, err := parseWebTemplates()
 	if err != nil {
 		t.Fatal(err)
 	}

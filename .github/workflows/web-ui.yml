@@ -1,20 +1,8 @@
 name: Web UI
 
 on:
-  push:
-    paths:
-      - "package.json"
-      - "package-lock.json"
-      - "Makefile"
-      - "internal/server/web/**"
-      - ".github/workflows/web-ui.yml"
-  pull_request:
-    paths:
-      - "package.json"
-      - "package-lock.json"
-      - "Makefile"
-      - "internal/server/web/**"
-      - ".github/workflows/web-ui.yml"
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -24,9 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run test-web
       - run: make web-css-check

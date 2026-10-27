@@ -2,6 +2,7 @@
   "name": "oh-my-acme-web-ui",
   "private": true,
   "scripts": {
+    "test-web": "node --test ./internal/server/web/tests/*.test.cjs",
     "web-css": "tailwindcss -i ./internal/server/web/styles/app.css -o ./internal/server/web/static/app.css --minify",
     "web-css-watch": "tailwindcss -i ./internal/server/web/styles/app.css -o ./internal/server/web/static/app.css --watch"
   },

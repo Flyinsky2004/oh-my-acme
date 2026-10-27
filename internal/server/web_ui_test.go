@@ -1,17 +1,67 @@
 package server
 
 import (
-	"html/template"
+	"crypto/sha256"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 )
 
+func TestRenderedWebShellsVersionAssetsByContent(t *testing.T) {
+	web, err := NewWeb(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetRef := regexp.MustCompile(`(?:href|src)="(/static/[^"]+)"`)
+	for _, name := range []string{"layout", "login"} {
+		t.Run(name, func(t *testing.T) {
+			var out strings.Builder
+			if err := web.tmpl.ExecuteTemplate(&out, name, map[string]any{}); err != nil {
+				t.Fatal(err)
+			}
+			refs := assetRef.FindAllStringSubmatch(out.String(), -1)
+			if len(refs) < 2 {
+				t.Fatal("expected local stylesheet and script assets")
+			}
+			for _, ref := range refs {
+				u, err := url.Parse(ref[1])
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := staticFS.ReadFile("web" + u.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sum := sha256.Sum256(data)
+				if got, want := u.Query().Get("v"), fmt.Sprintf("%x", sum[:8]); got != want {
+					t.Errorf("asset %s version = %q, want content hash %q", u.Path, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestStaticAssetsRequireRevalidation(t *testing.T) {
+	for _, path := range []string{"/static/app.js", "/static/app.css", "/static/app.js?v=upgrade"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rw := httptest.NewRecorder()
+		(&Web{}).Handler().ServeHTTP(rw, req)
+		if rw.Code != http.StatusOK {
+			t.Fatalf("GET %s: status %d", path, rw.Code)
+		}
+		if got := rw.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("GET %s: Cache-Control = %q, want no-cache", path, got)
+		}
+	}
+}
+
 func TestWebTemplatesParse(t *testing.T) {
-	tmpl, err := template.ParseFS(templatesFS, "web/templates/*.html")
+	tmpl, err := parseWebTemplates()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +89,7 @@ func TestWebShellsUseOnlyLocalStaticAssets(t *testing.T) {
 				t.Errorf("%s references remote asset %q", name, ref)
 			}
 		}
-		for _, local := range []string{`href="/static/app.css"`, `src="/static/htmx.min.js"`} {
+		for _, local := range []string{`{{assetURL "app.css"}}`, `{{assetURL "htmx.min.js"}}`} {
 			if !strings.Contains(string(body), local) {
 				t.Errorf("%s does not reference %s", name, local)
 			}

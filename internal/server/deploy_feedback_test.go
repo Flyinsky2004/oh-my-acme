@@ -9,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"html/template"
 	"io/fs"
 	"log/slog"
 	"math/big"
@@ -251,7 +250,7 @@ func TestLayoutProvidesLiveToastContainerAndToastScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	layout := string(body)
-	for _, want := range []string{`aria-live="polite"`, `src="/static/app.js"`} {
+	for _, want := range []string{`aria-live="polite"`, `{{assetURL "app.js"}}`} {
 		if !strings.Contains(layout, want) {
 			t.Errorf("layout does not contain %q", want)
 		}
@@ -288,7 +287,7 @@ func TestAgentPickerSubmitsEveryAgentInSelectedPanel(t *testing.T) {
 }
 
 func TestCertificateRowDisabledDeployButtonExplainsMissingPrerequisites(t *testing.T) {
-	tmpl, err := template.ParseFS(templatesFS, "web/templates/*.html")
+	tmpl, err := parseWebTemplates()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +422,7 @@ func newDeployFeedbackTestWeb(t *testing.T) (*Web, *store.Store, *pki.CA) {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	})
-	tmpl, err := template.ParseFS(templatesFS, "web/templates/*.html")
+	tmpl, err := parseWebTemplates()
 	if err != nil {
 		t.Fatal(err)
 	}

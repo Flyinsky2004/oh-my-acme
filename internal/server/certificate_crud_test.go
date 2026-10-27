@@ -1,7 +1,6 @@
 package server
 
 import (
-	"html/template"
 	"strings"
 	"testing"
 
@@ -118,7 +117,7 @@ func TestDeleteCertificateRejectsRunning(t *testing.T) {
 }
 
 func TestCertificateFormRendersNewAndEdit(t *testing.T) {
-	tmpl, err := template.ParseFS(templatesFS, "web/templates/*.html")
+	tmpl, err := parseWebTemplates()
 	if err != nil {
 		t.Fatal(err)
 	}

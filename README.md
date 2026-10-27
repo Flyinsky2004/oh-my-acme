@@ -44,8 +44,10 @@ Agent 首次注册成功后会把实际连接到的 Server IP 记录为精确的
 
 ```bash
 npm ci
+npm run test-web    # 前端交互回归测试
 make web-css        # 编译并覆盖已提交的 CSS
 make web-css-check  # 确认已提交 CSS 与源文件一致，不修改工作区
 ```
 
 `make build` 不会调用 npm。CI 中的 Web UI workflow 只检查 CSS 产物是否过期，release 工作流仍是纯 Go 构建。
+两个 workflow 都只在发布 GitHub Release（含预发布）时触发，使用该 Release 的标签版本；普通提交、PR、仅推送标签及保存 Release 草稿均不会触发。构建完成后，安装包、安装脚本和校验文件会上传到已发布的 Release。

@@ -10,7 +10,27 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/Flyinsky2004/oh-my-acme/internal/domain"
 )
+
+func TestCertificateRowConfirmsIssueAndDeleteWithDomain(t *testing.T) {
+	tmpl, err := parseWebTemplates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	cert := &domain.Certificate{ID: "cert1", RootDomain: "example.com", Current: &domain.CertificateVersion{ID: "v1"}, TargetAgents: []string{"agent1"}}
+	if err := tmpl.ExecuteTemplate(&out, "certificate-row", makeCertificateRow(cert)); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"issue", "delete"} {
+		button := regexp.MustCompile(`<button[^>]+hx-post="/certificates/cert1/` + action + `"[^>]*>`).FindString(out.String())
+		if !strings.Contains(button, `hx-confirm="警告：`) || !strings.Contains(button, "example.com") {
+			t.Errorf("%s button lacks a named warning: %s", action, button)
+		}
+	}
+}
 
 func TestRenderedWebShellsVersionAssetsByContent(t *testing.T) {
 	web, err := NewWeb(nil)

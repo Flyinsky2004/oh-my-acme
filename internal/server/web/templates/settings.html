@@ -19,14 +19,14 @@
       <p><span class="badge running">正在更新到 {{.UpdateTarget}}</span></p>
       <p class="muted">更新完成后 Server 会由 systemd 自动重启，请稍后刷新页面。</p>
     {{else if .ServerVersions}}
-      <form class="compact-form" method="post" action="/settings/update">
+      <form class="compact-form" method="post" action="/settings/update" data-confirm-action="更新 Server" data-confirm-target="Server" data-confirm-notice="更新完成后 Server 将自动重启。">
         <div class="field">
           <label class="field-label" for="server-version">目标版本</label>
           <select id="server-version" name="version">
             {{range .ServerVersions}}<option value="{{.}}">{{.}}</option>{{end}}
           </select>
         </div>
-        <button type="submit">更新 Server</button>
+        <button type="submit">{{template "icon-refresh"}}更新 Server</button>
       </form>
     {{else}}
       <p class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}当前已是最新正式版本。{{end}}</p>
@@ -62,7 +62,7 @@
               {{if .Default}}
                 <span class="badge success">默认</span>
               {{else}}
-                <form class="inline" method="post" action="/settings/ca/{{.ID}}/default"><button class="button-secondary" type="submit">设为默认</button></form>
+                <form class="inline" method="post" action="/settings/ca/{{.ID}}/default"><button class="button-secondary" type="submit">{{template "icon-default"}}设为默认</button></form>
               {{end}}
             </td>
           </tr>
@@ -79,7 +79,7 @@
         <label class="field-label" for="directory-url">Directory URL</label>
         <input id="directory-url" name="directory_url" placeholder="https://acme.example.com/directory" required>
       </div>
-      <button type="submit">添加自定义 CA</button>
+      <button type="submit">{{template "icon-plus"}}添加自定义 CA</button>
     </form>
   </section>
 
@@ -135,7 +135,7 @@
         </div>
         <label class="checkbox-field field-full" for="tg-clear-token"><input id="tg-clear-token" type="checkbox" name="tg_clear_token"><span>关闭机器人并清除本机保存的 Bot Token</span></label>
       </div>
-      <div class="form-actions"><button type="submit">保存</button></div>
+      <div class="form-actions"><button type="submit">{{template "icon-save"}}保存</button></div>
     </form>
   </section>
 </div>

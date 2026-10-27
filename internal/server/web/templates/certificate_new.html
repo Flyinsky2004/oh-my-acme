@@ -50,8 +50,8 @@
           </select>
         </div>
         <div class="dual-controls" role="group" aria-label="移动 Agent">
-          <button type="button" class="dual-move" data-dir="right" aria-label="选入右侧" title="选入 →">→</button>
-          <button type="button" class="dual-move" data-dir="left" aria-label="移回左侧" title="← 移回">←</button>
+          <button type="button" class="dual-move" data-dir="right" aria-label="选入右侧" title="选入 →">{{template "icon-right"}}</button>
+          <button type="button" class="dual-move" data-dir="left" aria-label="移回左侧" title="← 移回">{{template "icon-back"}}</button>
         </div>
         <div class="dual-panel">
           <span class="dual-panel-title">已选</span>
@@ -66,7 +66,7 @@
     <label class="checkbox-field field-full" for="cert-enabled"><input id="cert-enabled" type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}><span>启用此证书（自动续期）</span></label>
     {{end}}
   </div>
-  <div class="form-actions"><a class="button button-secondary" href="/certificates">取消</a><button type="submit">{{if .Edit}}保存修改{{else}}保存证书{{end}}</button></div>
+  <div class="form-actions"><a class="button button-secondary" href="/certificates">{{template "icon-cancel"}}取消</a><button type="submit">{{template "icon-save"}}{{if .Edit}}保存修改{{else}}保存证书{{end}}</button></div>
 </form>
 <script>
 (function () {

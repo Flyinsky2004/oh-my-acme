@@ -14,7 +14,7 @@
       <label class="field-label" for="agent-name">Agent 名称</label>
       <input id="agent-name" name="name" required>
     </div>
-    <button type="submit">生成安装命令</button>
+    <button type="submit">{{template "icon-terminal"}}生成安装命令</button>
   </form>
 
   {{if .InstallCommand}}
@@ -63,20 +63,20 @@
               {{if eq .UpdateStatus "running"}}
                 <span class="badge running">正在更新到 {{.UpdateTarget}}</span>
               {{else if .Versions}}
-                <form class="table-form" method="post" action="/agents/{{.ID}}/update">
+                <form class="table-form" method="post" action="/agents/{{.ID}}/update" data-confirm-action="更新 Agent" data-confirm-target="{{.Name}}">
                   {{$default := .DefaultVersion}}
                   <label class="sr-only" for="agent-version-{{.ID}}">目标版本</label>
                   <select id="agent-version-{{.ID}}" name="version">
                     {{range .Versions}}<option value="{{.}}" {{if eq . $default}}selected{{end}}>{{.}}</option>{{end}}
                   </select>
-                  <button type="submit">更新</button>
+                  <button type="submit">{{template "icon-refresh"}}更新</button>
                 </form>
               {{else}}
                 <span class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}已是最新{{end}}</span>
               {{end}}
               {{if .UpdateError}}<div class="err" role="alert">{{.UpdateError}}</div>{{end}}
             </td>
-            <td><button class="button-danger" type="button" hx-post="/agents/{{.ID}}/delete" hx-confirm="删除该 Agent？">删除</button></td>
+            <td><button class="button-danger" type="button" hx-post="/agents/{{.ID}}/delete" hx-confirm="警告：是否要对 Agent「{{.Name}}」执行「删除」操作？">{{template "icon-delete"}}删除</button></td>
           </tr>
         {{end}}
         </tbody>

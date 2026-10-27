@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -217,5 +218,78 @@ func TestTelegramDeploymentSingleFlight(t *testing.T) {
 	}
 	if started {
 		t.Fatal("duplicate deployment claim succeeded")
+	}
+}
+
+func TestTelegramCertificateActionsRequireConfirmation(t *testing.T) {
+	for _, action := range []string{taskTypeIssue, "deploy"} {
+		for _, invalid := range []string{"missing", "expired", "wrong certificate", "wrong action"} {
+			t.Run(action+"/"+invalid, func(t *testing.T) {
+				web, st, _ := newDeployFeedbackTestWeb(t)
+				seedIssueState(t, st)
+				if err := st.WithState(true, func(state *domain.State) error {
+					state.Certificates["cert1"].Current = &domain.CertificateVersion{ID: "v1"}
+					state.Certificates["cert1"].TargetAgents = []string{"agent1"}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				controller := newTelegramController(web.srv)
+				pending := telegramPending{Kind: action + "-certificate", RootDomain: "cert1", ExpiresAt: time.Now().Add(time.Minute)}
+				switch invalid {
+				case "expired":
+					pending.ExpiresAt = time.Now().Add(-time.Minute)
+				case "wrong certificate":
+					pending.RootDomain = "cert2"
+				case "wrong action":
+					pending.Kind = "delete-certificate"
+				}
+				if invalid != "missing" {
+					controller.setPending(123, pending)
+				}
+				before := st.State()
+				if action == taskTypeIssue {
+					controller.startIssue(context.Background(), nil, 123, "cert1")
+				} else {
+					controller.startDeploy(context.Background(), nil, 123, "cert1")
+				}
+				if !reflect.DeepEqual(before, st.State()) {
+					t.Fatal("unconfirmed operation changed state or started a task")
+				}
+			})
+		}
+	}
+}
+
+func TestTelegramActionPromptWaitsForMatchingSingleUseConfirmation(t *testing.T) {
+	for _, action := range []string{taskTypeIssue, "deploy"} {
+		t.Run(action, func(t *testing.T) {
+			web, st, _ := newDeployFeedbackTestWeb(t)
+			seedIssueState(t, st)
+			if err := st.WithState(true, func(state *domain.State) error {
+				state.Certificates["cert1"].Current = &domain.CertificateVersion{ID: "v1"}
+				state.Certificates["cert1"].TargetAgents = []string{"agent1"}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			controller := newTelegramController(web.srv)
+			before := st.State()
+			controller.handleEntityCallback(context.Background(), nil, 123, "tg:"+action+":cert1")
+			if !reflect.DeepEqual(before, st.State()) {
+				t.Fatal("opening the confirmation started an operation")
+			}
+			if !controller.consumePendingAction(123, action+"-certificate", "cert1") {
+				t.Fatal("matching confirmation was not accepted")
+			}
+			if controller.consumePendingAction(123, action+"-certificate", "cert1") {
+				t.Fatal("the same confirmation was accepted twice")
+			}
+			controller.confirmCertificateAction(context.Background(), nil, 123, "cert1", action)
+			controller.showCertificate(context.Background(), nil, 123, "cert1")
+			if controller.consumePendingAction(123, action+"-certificate", "cert1") {
+				t.Fatal("cancelled confirmation was still accepted")
+			}
+		})
 	}
 }

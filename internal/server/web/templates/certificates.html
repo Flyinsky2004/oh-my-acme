@@ -10,17 +10,17 @@
   <td><code>{{.KeyType}}</code></td>
   <td><div class="cell-actions">
     {{if .Issuing}}
-      <button type="button" disabled>签发中</button>
+      <button type="button" disabled>{{template "icon-refresh"}}签发中</button>
     {{else if .Deploying}}
-      <button type="button" disabled>下发中</button>
+      <button type="button" disabled>{{template "icon-refresh"}}下发中</button>
     {{else}}
-      <button type="button" hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">签发</button>
+      <button type="button" hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" hx-confirm="警告：是否要对「{{.RootDomain}}」执行「签发证书」操作？">{{template "icon-issue"}}签发</button>
     {{end}}
-    <button type="button" class="secondary" hx-get="/certificates/{{.ID}}/deploy" hx-target="#certificate-deploy-content" hx-disabled-elt="this" aria-haspopup="dialog" aria-controls="certificate-deploy-dialog" {{if not .CanDeploy}}disabled title="{{.DeployDisabledReason}}" aria-label="下发不可用：{{.DeployDisabledReason}}"{{end}}>{{if .CanDeploy}}下发{{else}}{{.DeployDisabledReason}}{{end}}</button>
-    <a class="button button-ghost" href="/certificates/{{.ID}}/log">日志</a>
+    <button type="button" class="secondary" hx-get="/certificates/{{.ID}}/deploy" hx-target="#certificate-deploy-content" hx-disabled-elt="this" aria-haspopup="dialog" aria-controls="certificate-deploy-dialog" {{if not .CanDeploy}}disabled title="{{.DeployDisabledReason}}" aria-label="下发不可用：{{.DeployDisabledReason}}"{{end}}>{{template "icon-deploy"}}{{if .CanDeploy}}下发{{else}}{{.DeployDisabledReason}}{{end}}</button>
+    <a class="button button-ghost" href="/certificates/{{.ID}}/log">{{template "icon-log"}}日志</a>
     {{if not .Running}}
-      <a class="button button-ghost" href="/certificates/{{.ID}}/edit">编辑</a>
-      <button type="button" class="button-danger" hx-post="/certificates/{{.ID}}/delete" hx-confirm="删除该证书？">删除</button>
+      <a class="button button-ghost" href="/certificates/{{.ID}}/edit">{{template "icon-edit"}}编辑</a>
+      <button type="button" class="button-danger" hx-post="/certificates/{{.ID}}/delete" hx-confirm="警告：是否要对证书「{{.RootDomain}}」执行「删除」操作？此操作会删除证书文件及任务记录。">{{template "icon-delete"}}删除</button>
     {{end}}
   </div></td>
 </tr>
@@ -35,7 +35,7 @@
 {{if .Certs}}
 <div class="table-shell">
   <div class="table-scroll" role="region" tabindex="0" aria-label="证书列表">
-    <table>
+    <table class="certificate-table">
       <caption class="sr-only">已配置证书</caption>
       <thead><tr><th scope="col">域名</th><th scope="col">状态</th><th scope="col">有效期</th><th scope="col">私钥算法</th><th scope="col">操作</th></tr></thead>
       <tbody>{{range .Certs}}{{template "certificate-row" .}}{{end}}</tbody>
@@ -48,10 +48,11 @@
 <dialog id="certificate-deploy-dialog" class="deploy-dialog" aria-labelledby="deploy-dialog-title" aria-describedby="deploy-dialog-description">
   <div id="certificate-deploy-content"></div>
 </dialog>
+<template id="deploy-loading-cancel"><button type="button" class="secondary" data-deploy-cancel>{{template "icon-cancel"}}取消</button></template>
 {{end}}
 
 {{define "certificate-deploy-form"}}
-<form hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" hx-disabled-elt="find button[type='submit']" data-deploy-form>
+<form hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" hx-disabled-elt="find button[type='submit']" hx-confirm="警告：是否要对「{{.RootDomain}}」执行「下发证书」操作？" data-deploy-form>
   <header class="deploy-dialog-header">
     <h2 id="deploy-dialog-title">下发证书</h2>
     <p class="cell-primary">{{.RootDomain}}</p>
@@ -59,8 +60,8 @@
   </header>
   <div class="deploy-toolbar">
     <div class="cell-actions">
-      <button type="button" class="secondary" data-deploy-select="all">全选</button>
-      <button type="button" class="button-ghost" data-deploy-select="none">取消全选</button>
+      <button type="button" class="secondary" data-deploy-select="all">{{template "icon-select-all"}}全选</button>
+      <button type="button" class="button-ghost" data-deploy-select="none">{{template "icon-deselect-all"}}取消全选</button>
     </div>
     <p class="muted" data-deploy-count role="status" aria-live="polite" aria-atomic="true"></p>
   </div>
@@ -68,15 +69,15 @@
     <legend class="sr-only">本次下发的 Agent</legend>
     {{range .Agents}}
     <label class="checkbox-field deploy-agent-option">
-      <input type="checkbox" name="agents" value="{{.ID}}" {{if .Available}}checked{{else}}disabled{{end}}>
+      <input type="checkbox" name="agents" data-agent-name="{{.Name}}" value="{{.ID}}" {{if .Available}}checked{{else}}disabled{{end}}>
       <span><span class="cell-primary">{{.Name}}</span><span class="hint">{{if .Available}}{{.Address}}{{else}}Agent 已移除，请编辑证书目标列表{{end}}</span></span>
     </label>
     {{end}}
   </fieldset>
   <p class="deploy-selection-error" id="deploy-selection-error" role="alert" hidden></p>
   <div class="form-actions">
-    <button type="button" class="secondary" data-deploy-cancel autofocus>取消</button>
-    <button type="submit" data-deploy-submit>确认下发</button>
+    <button type="button" class="secondary" data-deploy-cancel autofocus>{{template "icon-cancel"}}取消</button>
+    <button type="submit" data-deploy-submit>{{template "icon-deploy"}}<span data-deploy-submit-label>确认下发</span></button>
   </div>
 </form>
 {{end}}

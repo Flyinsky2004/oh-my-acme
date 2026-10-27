@@ -11,9 +11,11 @@
 - DNS-01 验证，Cloudflare（`CF_Token` / `CF_Zone_ID` / `CF_Account_ID`）
 - 自动 / 手动续期，Agent 下发失败可在 Web UI 手动重试
 - 手动下发前可选择本次同步的目标 Agent，支持全选 / 取消全选；自动续期仍下发到全部配置目标
+- Web / Telegram 手动签发、下发前需确认域名与操作，下发确认中列明本次目标 Agent
 - 内部自签 CA 的 mTLS 通信，不依赖任何第三方 CA
 - Server 与 Agent 通过 GitHub Release 的 `install.sh` 安装为 systemd 服务
 - Web UI：Go 模板 + HTMX + 已编译 CSS，单二进制，简体中文，完全离线
+- 按钮与导航使用 [Heroicons](https://heroicons.com/) 线框 SVG，图标与许可随程序内嵌
 
 ## 快速开始（开发）
 

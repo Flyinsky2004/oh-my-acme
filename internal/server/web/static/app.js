@@ -82,6 +82,40 @@
   document.addEventListener("htmx:afterSwap", initializeDeployForm);
   document.addEventListener("htmx:load", initializeDeployForm);
 
+  document.addEventListener("htmx:confirm", (event) => {
+    const form = event.detail.elt.closest("[data-deploy-form]");
+    if (!form) {
+      return;
+    }
+    event.preventDefault();
+    const selected = Array.from(form.querySelectorAll('input[name="agents"]:checked:not(:disabled)'));
+    if (selected.length === 0) {
+      updateDeploySelection(form);
+      return;
+    }
+    const agents = selected.map((option) => option.dataset.agentName || option.value);
+    const question = `${event.detail.question}\n\n本次下发的 Agent（${agents.length} 台）：\n${agents.join("\n")}`;
+    if (window.confirm(question)) {
+      event.detail.issueRequest(true);
+    }
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!form.matches("[data-confirm-action]")) {
+      return;
+    }
+    const version = form.querySelector('[name="version"]');
+    const action = form.dataset.confirmAction + (version ? ` 至 ${version.value}` : "");
+    let question = `警告：是否要对「${form.dataset.confirmTarget}」执行「${action}」操作？`;
+    if (form.dataset.confirmNotice) {
+      question += `\n\n${form.dataset.confirmNotice}`;
+    }
+    if (!window.confirm(question)) {
+      event.preventDefault();
+    }
+  });
+
   document.addEventListener("click", (event) => {
     const cancel = event.target.closest("[data-deploy-cancel]");
     if (cancel) {
@@ -120,11 +154,7 @@
       loading.id = "deploy-dialog-title";
       loading.setAttribute("role", "status");
       loading.textContent = "正在加载 Agent…";
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.dataset.deployCancel = "";
-      cancel.className = "secondary";
-      cancel.textContent = "取消";
+      const cancel = document.getElementById("deploy-loading-cancel").content.firstElementChild.cloneNode(true);
       content.replaceChildren(loading, cancel);
       if (!deployDialog.open) {
         deployDialog.showModal();
@@ -140,7 +170,7 @@
       return;
     }
     element.dataset.submitting = "true";
-    element.querySelector("[data-deploy-submit]").textContent = "正在提交…";
+    element.querySelector("[data-deploy-submit-label]").textContent = "正在提交…";
     updateDeploySelection(element);
   });
 
@@ -150,7 +180,7 @@
       return;
     }
     delete form.dataset.submitting;
-    form.querySelector("[data-deploy-submit]").textContent = "确认下发";
+    form.querySelector("[data-deploy-submit-label]").textContent = "确认下发";
     const selected = form.querySelector('input[name="agents"]:checked:not(:disabled)');
     form.querySelector("[data-deploy-submit]").disabled = !selected;
     const deployDialog = form.closest("dialog");

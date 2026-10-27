@@ -302,7 +302,7 @@
     width: 1.15rem;
     height: 1.15rem;
     flex: none;
-    stroke-width: 1.8;
+    stroke-width: 1.5;
   }
 
   .sidebar-footer {
@@ -828,6 +828,15 @@
   .cell-actions button, .cell-actions .button {
     min-height: 2.6rem;
     padding-inline: 0.8rem;
+  }
+
+  .certificate-table th, .certificate-table td:nth-child(3), .certificate-table td:nth-child(4) {
+    white-space: nowrap;
+  }
+
+  .certificate-table .cell-actions {
+    flex-wrap: wrap;
+    min-width: 16rem;
   }
 
   code {

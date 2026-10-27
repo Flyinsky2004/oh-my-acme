@@ -34,7 +34,7 @@
         <span class="hint" id="token-hint">使用 Server 启动日志中显示的一次性令牌。</span>
       </div>
       {{end}}
-      <button type="submit">{{if .Setup}}完成初始化{{else}}登录{{end}}</button>
+      <button type="submit">{{template "icon-login"}}{{if .Setup}}完成初始化{{else}}登录{{end}}</button>
     </form>
   </section>
 </main>

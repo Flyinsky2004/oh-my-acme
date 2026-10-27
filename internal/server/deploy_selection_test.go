@@ -125,7 +125,7 @@ func TestHandleDeployFormUsesOnlyConfiguredTargetsWithoutDeploying(t *testing.T)
 		t.Fatalf("status=%d, body=%s", rw.Code, rw.Body.String())
 	}
 	body := rw.Body.String()
-	for _, want := range []string{`value="agent1" checked`, `value="deleted" disabled`, "Web &lt;node&gt;", "192.0.2.1", "全选", "取消全选"} {
+	for _, want := range []string{`value="agent1" checked`, `value="deleted" disabled`, `hx-confirm="警告：是否要对「example.com」执行「下发证书」操作？"`, `data-agent-name="Web &lt;node&gt;"`, "192.0.2.1", "全选", "取消全选"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("deploy form missing %q: %s", want, body)
 		}

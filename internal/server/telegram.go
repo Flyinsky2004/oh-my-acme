@@ -336,9 +336,13 @@ func (t *TelegramController) handleEntityCallback(ctx context.Context, b *bot.Bo
 	case strings.HasPrefix(data, "tg:cert:"):
 		t.showCertificate(ctx, b, chatID, strings.TrimPrefix(data, "tg:cert:"))
 	case strings.HasPrefix(data, "tg:issue:"):
-		t.startIssue(ctx, b, chatID, strings.TrimPrefix(data, "tg:issue:"))
+		t.confirmCertificateAction(ctx, b, chatID, strings.TrimPrefix(data, "tg:issue:"), taskTypeIssue)
 	case strings.HasPrefix(data, "tg:deploy:"):
-		t.startDeploy(ctx, b, chatID, strings.TrimPrefix(data, "tg:deploy:"))
+		t.confirmCertificateAction(ctx, b, chatID, strings.TrimPrefix(data, "tg:deploy:"), "deploy")
+	case strings.HasPrefix(data, "tg:issue-ok:"):
+		t.startIssue(ctx, b, chatID, strings.TrimPrefix(data, "tg:issue-ok:"))
+	case strings.HasPrefix(data, "tg:deploy-ok:"):
+		t.startDeploy(ctx, b, chatID, strings.TrimPrefix(data, "tg:deploy-ok:"))
 	case strings.HasPrefix(data, "tg:log:"):
 		t.showCertificateLog(ctx, b, chatID, strings.TrimPrefix(data, "tg:log:"))
 	case strings.HasPrefix(data, "tg:del-cert-ok:"):
@@ -393,7 +397,45 @@ func (t *TelegramController) showCertificate(ctx context.Context, b *bot.Bot, ch
 	t.send(ctx, b, chatID, telegramCertificateText(cert), telegramKeyboard(rows))
 }
 
+func (t *TelegramController) confirmCertificateAction(ctx context.Context, b *bot.Bot, chatID int64, certID, action string) {
+	state := t.srv.st.State()
+	cert := state.Certificates[certID]
+	if cert == nil {
+		t.send(ctx, b, chatID, "未找到该证书。", telegramHomeButton())
+		return
+	}
+	label := "签发证书"
+	if action == "deploy" {
+		if cert.Current == nil || len(cert.TargetAgents) == 0 {
+			t.send(ctx, b, chatID, "请先签发证书并配置目标 Agent。", nil)
+			return
+		}
+		label = "下发证书"
+	}
+	t.setPending(chatID, telegramPending{Kind: action + "-certificate", RootDomain: certID, ExpiresAt: time.Now().Add(2 * time.Minute)})
+	message := fmt.Sprintf("警告：是否要对「%s」执行「%s」操作？", cert.RootDomain, label)
+	if action == "deploy" {
+		names := make([]string, 0, len(cert.TargetAgents))
+		for _, id := range cert.TargetAgents {
+			name := id
+			if agent := state.Agents[id]; agent != nil {
+				name = agentLabel(agent)
+			}
+			names = append(names, name)
+		}
+		message += fmt.Sprintf("\n\n本次下发的 Agent（%d 台）：\n%s", len(names), strings.Join(names, "\n"))
+	}
+	markup := telegramKeyboard([][]models.InlineKeyboardButton{
+		telegramRow(telegramButton("确认"+label, "tg:"+action+"-ok:"+certID), telegramButton("取消", "tg:cert:"+certID)),
+	})
+	t.send(ctx, b, chatID, message, markup)
+}
+
 func (t *TelegramController) startIssue(ctx context.Context, b *bot.Bot, chatID int64, certID string) {
+	if !t.consumePendingAction(chatID, "issue-certificate", certID) {
+		t.send(ctx, b, chatID, "签发确认已失效，请重新操作。", telegramHomeButton())
+		return
+	}
 	cert := t.srv.st.State().Certificates[certID]
 	if cert == nil {
 		t.send(ctx, b, chatID, "未找到该证书。", nil)
@@ -413,6 +455,10 @@ func (t *TelegramController) startIssue(ctx context.Context, b *bot.Bot, chatID 
 }
 
 func (t *TelegramController) startDeploy(ctx context.Context, b *bot.Bot, chatID int64, certID string) {
+	if !t.consumePendingAction(chatID, "deploy-certificate", certID) {
+		t.send(ctx, b, chatID, "下发确认已失效，请重新操作。", telegramHomeButton())
+		return
+	}
 	cert := t.srv.st.State().Certificates[certID]
 	if cert == nil || cert.Current == nil {
 		t.send(ctx, b, chatID, "证书尚未签发成功，无法部署。", nil)
@@ -558,11 +604,11 @@ func (t *TelegramController) selectCA(ctx context.Context, b *bot.Bot, chatID in
 	}
 	draft.stage, draft.caID = "target", caID
 	t.setDraft(chatID, draft)
-	message := "确认创建并异步签发 " + draft.root + "？\n"
+	message := "警告：是否要对「" + draft.root + "」执行「创建并签发证书」操作？\n"
 	message += "签发会在后台执行。若选择所有已注册 Agents，签发成功后机器人会等待完成并调用部署；手动签发本身不会自动部署。"
 	markup := telegramKeyboard([][]models.InlineKeyboardButton{
-		telegramRow(telegramButton("所有已注册 Agents 并签发", "tg:new-target-all")),
-		telegramRow(telegramButton("不指定 Agent，直接签发", "tg:new-target-none")),
+		telegramRow(telegramButton("确认签发并下发到全部 Agent", "tg:new-target-all")),
+		telegramRow(telegramButton("仅确认签发", "tg:new-target-none")),
 		telegramRow(telegramButton("取消", "tg:cancel")),
 	})
 	t.send(ctx, b, chatID, message, markup)

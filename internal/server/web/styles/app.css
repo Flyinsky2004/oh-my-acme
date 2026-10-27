@@ -670,6 +670,80 @@
     padding-top: 0.25rem;
   }
 
+  .deploy-dialog {
+    width: min(34rem, calc(100vw - 2rem));
+    max-height: calc(100dvh - 2rem);
+    margin: auto;
+    padding: 1.5rem;
+    overflow-y: auto;
+    color: var(--ink);
+    background: var(--surface-solid);
+    border: 1px solid var(--line-strong);
+    border-radius: 1.15rem;
+    box-shadow: var(--shadow);
+  }
+
+  .deploy-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.48);
+    backdrop-filter: blur(4px);
+  }
+
+  .deploy-dialog form, .deploy-dialog-header {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .deploy-dialog-header p, .deploy-agent-option > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .deploy-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .deploy-agent-list {
+    display: grid;
+    gap: 0.5rem;
+    max-height: 40dvh;
+    min-width: 0;
+    margin: 0;
+    padding: 0.25rem;
+    overflow-y: auto;
+    border: 0;
+  }
+
+  .deploy-agent-option {
+    margin: 0;
+    padding: 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 0.78rem;
+  }
+
+  .deploy-agent-option:has(:checked) {
+    background: var(--accent-soft);
+    border-color: var(--line-strong);
+  }
+
+  .deploy-agent-option:has(:disabled) {
+    color: var(--muted);
+    cursor: not-allowed;
+  }
+
+  .deploy-agent-option input {
+    flex-shrink: 0;
+  }
+
+  .deploy-selection-error {
+    color: var(--danger);
+    font-size: 0.86rem;
+    overflow-wrap: anywhere;
+  }
+
   .table-shell {
     overflow: hidden;
     border-radius: 1.15rem;

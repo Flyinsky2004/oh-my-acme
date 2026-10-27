@@ -10,6 +10,7 @@
 - Go 原生 ACME，支持通配符证书（`example.com` + `*.example.com`）
 - DNS-01 验证，Cloudflare（`CF_Token` / `CF_Zone_ID` / `CF_Account_ID`）
 - 自动 / 手动续期，Agent 下发失败可在 Web UI 手动重试
+- 手动下发前可选择本次同步的目标 Agent，支持全选 / 取消全选；自动续期仍下发到全部配置目标
 - 内部自签 CA 的 mTLS 通信，不依赖任何第三方 CA
 - Server 与 Agent 通过 GitHub Release 的 `install.sh` 安装为 systemd 服务
 - Web UI：Go 模板 + HTMX + 已编译 CSS，单二进制，简体中文，完全离线

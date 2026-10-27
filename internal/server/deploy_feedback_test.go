@@ -102,35 +102,12 @@ func TestHandleDeployRejectsInvalidCertificateState(t *testing.T) {
 	}
 }
 
-func TestHandleDeployStartsAsyncWhenTargetAgentDoesNotExist(t *testing.T) {
+func TestStartDeployRecordsMissingAgentFailure(t *testing.T) {
 	web, st, _ := newDeployFeedbackTestWeb(t)
 	setDeployFeedbackCertificate(t, st, &domain.CertificateVersion{ID: "v1"}, []string{"missing-agent"})
 
-	req := httptest.NewRequest(http.MethodPost, "/certificates/cert1/deploy", nil)
-	req.SetPathValue("id", "cert1")
-	rw := httptest.NewRecorder()
-	web.handleDeploy(rw, req)
-
-	if rw.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body=%s", rw.Code, http.StatusOK, rw.Body.String())
-	}
-	if contentType := rw.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/html") {
-		t.Fatalf("Content-Type = %q, want text/html", contentType)
-	}
-	if rw.Code == http.StatusBadGateway {
-		t.Fatal("deploy must not return 502")
-	}
-	var trigger map[string]map[string]string
-	if err := json.Unmarshal([]byte(rw.Header().Get("HX-Trigger")), &trigger); err != nil {
-		t.Fatalf("decode HX-Trigger: %v", err)
-	}
-	if got := trigger["showToast"]["message"]; got != "已开始异步下发到目标 Agent" {
-		t.Fatalf("showToast message = %q", got)
-	}
-	for _, b := range []byte(rw.Header().Get("HX-Trigger")) {
-		if b >= 0x80 {
-			t.Fatalf("HX-Trigger contains non-ASCII byte 0x%x", b)
-		}
+	if started, err := web.srv.StartDeploy("cert1"); err != nil || !started {
+		t.Fatalf("start automatic deployment: started=%t, err=%v", started, err)
 	}
 	waitCertificateDeploy(t, web.srv, "cert1", domain.StatusFailed)
 	cert := st.State().Certificates["cert1"]
@@ -165,7 +142,8 @@ func TestHandleDeploySetsShowToastTriggerAfterSuccessfulDeployment(t *testing.T)
 		t.Fatalf("add deployment agent: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/certificates/cert1/deploy", nil)
+	req := httptest.NewRequest(http.MethodPost, "/certificates/cert1/deploy", strings.NewReader("agents=agent1"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetPathValue("id", "cert1")
 	rw := httptest.NewRecorder()
 	web.handleDeploy(rw, req)
@@ -188,6 +166,11 @@ func TestHandleDeploySetsShowToastTriggerAfterSuccessfulDeployment(t *testing.T)
 	}
 	if got := trigger["showToast"]["message"]; got != "已开始异步下发到目标 Agent" {
 		t.Fatalf("showToast message = %q, want async start message", got)
+	}
+	for _, b := range []byte(rw.Header().Get("HX-Trigger")) {
+		if b >= 0x80 {
+			t.Fatalf("HX-Trigger contains non-ASCII byte 0x%x", b)
+		}
 	}
 	waitCertificateDeploy(t, web.srv, "cert1", domain.StatusSuccess)
 }

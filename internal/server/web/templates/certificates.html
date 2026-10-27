@@ -16,7 +16,7 @@
     {{else}}
       <button type="button" hx-post="/certificates/{{.ID}}/issue" hx-target="#cert-{{.ID}}" hx-swap="outerHTML">签发</button>
     {{end}}
-    <button type="button" class="secondary" hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" {{if not .CanDeploy}}disabled title="{{.DeployDisabledReason}}" aria-label="下发不可用：{{.DeployDisabledReason}}"{{end}}>{{if .CanDeploy}}下发{{else}}{{.DeployDisabledReason}}{{end}}</button>
+    <button type="button" class="secondary" hx-get="/certificates/{{.ID}}/deploy" hx-target="#certificate-deploy-content" hx-disabled-elt="this" aria-haspopup="dialog" aria-controls="certificate-deploy-dialog" {{if not .CanDeploy}}disabled title="{{.DeployDisabledReason}}" aria-label="下发不可用：{{.DeployDisabledReason}}"{{end}}>{{if .CanDeploy}}下发{{else}}{{.DeployDisabledReason}}{{end}}</button>
     <a class="button button-ghost" href="/certificates/{{.ID}}/log">日志</a>
     {{if not .Running}}
       <a class="button button-ghost" href="/certificates/{{.ID}}/edit">编辑</a>
@@ -45,4 +45,38 @@
 {{else}}
 <div class="glass-panel empty-state"><div class="empty-state-inner"><span class="empty-icon">{{template "icon-certificate"}}</span><h2>还没有证书</h2><p>新建证书后即可开始签发并下发到 Agent。</p><a class="button" href="/certificates/new">{{template "icon-plus"}}新建证书</a></div></div>
 {{end}}
+<dialog id="certificate-deploy-dialog" class="deploy-dialog" aria-labelledby="deploy-dialog-title" aria-describedby="deploy-dialog-description">
+  <div id="certificate-deploy-content"></div>
+</dialog>
+{{end}}
+
+{{define "certificate-deploy-form"}}
+<form hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" hx-disabled-elt="find button[type='submit']" data-deploy-form>
+  <header class="deploy-dialog-header">
+    <h2 id="deploy-dialog-title">下发证书</h2>
+    <p class="cell-primary">{{.RootDomain}}</p>
+    <p class="muted" id="deploy-dialog-description">选择本次同步的目标 Agent。此次选择仅对本次下发生效。</p>
+  </header>
+  <div class="deploy-toolbar">
+    <div class="cell-actions">
+      <button type="button" class="secondary" data-deploy-select="all">全选</button>
+      <button type="button" class="button-ghost" data-deploy-select="none">取消全选</button>
+    </div>
+    <p class="muted" data-deploy-count role="status" aria-live="polite" aria-atomic="true"></p>
+  </div>
+  <fieldset class="deploy-agent-list" aria-describedby="deploy-selection-error">
+    <legend class="sr-only">本次下发的 Agent</legend>
+    {{range .Agents}}
+    <label class="checkbox-field deploy-agent-option">
+      <input type="checkbox" name="agents" value="{{.ID}}" {{if .Available}}checked{{else}}disabled{{end}}>
+      <span><span class="cell-primary">{{.Name}}</span><span class="hint">{{if .Available}}{{.Address}}{{else}}Agent 已移除，请编辑证书目标列表{{end}}</span></span>
+    </label>
+    {{end}}
+  </fieldset>
+  <p class="deploy-selection-error" id="deploy-selection-error" role="alert" hidden></p>
+  <div class="form-actions">
+    <button type="button" class="secondary" data-deploy-cancel autofocus>取消</button>
+    <button type="submit" data-deploy-submit>确认下发</button>
+  </div>
+</form>
 {{end}}

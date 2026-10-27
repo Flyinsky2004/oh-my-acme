@@ -356,10 +356,13 @@ func (s *Server) issuerFor(caID, dirURL, accountEmail string) (*acme.Issuer, err
 const defaultAgentDeployTimeout = 90 * time.Second
 
 var (
-	errCertNotIssued  = errors.New("证书尚未签发，未执行下发")
-	errCertIssuing    = errors.New("证书正在签发，请稍后再下发")
-	errCertDeploying  = errors.New("证书正在下发，请稍后再签发")
-	errNoTargetAgents = errors.New("未配置目标 Agent，未执行下发")
+	errCertNotIssued      = errors.New("证书尚未签发，未执行下发")
+	errCertIssuing        = errors.New("证书正在签发，请稍后再下发")
+	errCertDeploying      = errors.New("证书正在下发，请稍后再签发")
+	errNoTargetAgents     = errors.New("未配置目标 Agent，未执行下发")
+	errNoSelectedAgents   = errors.New("请至少选择一个 Agent")
+	errInvalidTargetAgent = errors.New("所选 Agent 不属于该证书的目标列表，请刷新后重试")
+	errTargetAgentRemoved = errors.New("所选 Agent 已被删除，请刷新后重试")
 )
 
 func (s *Server) agentDeployTimeout() time.Duration {
@@ -376,7 +379,21 @@ func (s *Server) shuttingDown() bool {
 // StartDeploy claims a per-certificate deploy lock and pushes to every target
 // agent in the Server lifecycle. A duplicate start is idempotent.
 func (s *Server) StartDeploy(certID string) (bool, error) {
+	return s.startDeploy(certID, nil)
+}
+
+// StartDeployToAgents pushes only to the selected configured targets for this
+// run, without changing the certificate's targets for future renewals.
+func (s *Server) StartDeployToAgents(certID string, agentIDs []string) (bool, error) {
+	if agentIDs == nil {
+		agentIDs = []string{}
+	}
+	return s.startDeploy(certID, agentIDs)
+}
+
+func (s *Server) startDeploy(certID string, selected []string) (bool, error) {
 	started := false
+	var agents []string
 	err := s.st.WithState(true, func(st *domain.State) error {
 		cert := st.Certificates[certID]
 		if cert == nil {
@@ -394,11 +411,35 @@ func (s *Server) StartDeploy(certID string) (bool, error) {
 		if cert.DeployStatus == domain.StatusRunning {
 			return nil
 		}
+		if selected == nil {
+			agents = append([]string(nil), cert.TargetAgents...)
+		} else {
+			if len(selected) == 0 {
+				return errNoSelectedAgents
+			}
+			targets := make(map[string]bool, len(cert.TargetAgents))
+			for _, id := range cert.TargetAgents {
+				targets[id] = true
+			}
+			seen := make(map[string]bool, len(selected))
+			for _, id := range selected {
+				if !targets[id] {
+					return errInvalidTargetAgent
+				}
+				if st.Agents[id] == nil {
+					return errTargetAgentRemoved
+				}
+				if !seen[id] {
+					agents = append(agents, id)
+					seen[id] = true
+				}
+			}
+		}
 		if cert.Deploys == nil {
 			cert.Deploys = map[string]*domain.AgentDeployState{}
 		}
 		now := time.Now()
-		for _, agentID := range cert.TargetAgents {
+		for _, agentID := range agents {
 			d := cert.Deploys[agentID]
 			if d == nil {
 				d = &domain.AgentDeployState{AgentID: agentID}
@@ -417,10 +458,10 @@ func (s *Server) StartDeploy(certID string) (bool, error) {
 	s.Go(func(parent context.Context) {
 		ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 		defer cancel()
-		if err := s.DeployAll(ctx, certID); err != nil {
+		if err := s.deployAgents(ctx, certID, agents); err != nil {
 			s.log.Error("certificate deploy finished with errors", "cert_id", certID, "err", err)
 		}
-		s.finishDeploy(certID)
+		s.finishDeploy(certID, agents)
 	})
 	return true, nil
 }
@@ -478,6 +519,10 @@ func (s *Server) DeployAll(ctx context.Context, certID string) error {
 		return errNotFound
 	}
 	agents := append([]string(nil), cert.TargetAgents...)
+	return s.deployAgents(ctx, certID, agents)
+}
+
+func (s *Server) deployAgents(ctx context.Context, certID string, agents []string) error {
 	var firstErr error
 	for _, agentID := range agents {
 		if s.shuttingDown() {
@@ -497,13 +542,13 @@ func (s *Server) DeployAll(ctx context.Context, certID string) error {
 	return firstErr
 }
 
-func (s *Server) finishDeploy(certID string) {
+func (s *Server) finishDeploy(certID string, agents []string) {
 	_ = s.st.WithState(true, func(st *domain.State) error {
 		cert := st.Certificates[certID]
 		if cert == nil {
 			return nil
 		}
-		if certificateDeploymentComplete(cert) {
+		if certificateDeploymentCompleteForAgents(cert, agents) {
 			cert.DeployStatus = domain.StatusSuccess
 			return nil
 		}

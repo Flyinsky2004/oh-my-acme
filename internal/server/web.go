@@ -59,6 +59,7 @@ func (w *Web) Handler() http.Handler {
 	mux.Handle("GET /certificates/{id}/log", w.auth(w.handleCertificateLog))
 	mux.Handle("GET /certificates/{id}/log/content", w.auth(w.handleCertificateLogContent))
 	mux.Handle("POST /certificates/{id}/deploy", w.auth(w.handleDeploy))
+	mux.Handle("GET /certificates/{id}/deploy", w.auth(w.handleDeployForm))
 
 	mux.Handle("GET /credentials", w.auth(w.handleCredentials))
 	mux.Handle("GET /credentials/new", w.auth(w.handleCredentialNew))
@@ -411,9 +412,44 @@ func (w *Web) certificateLogData(rw http.ResponseWriter, id string) (map[string]
 	}, true
 }
 
+func (w *Web) handleDeployForm(rw http.ResponseWriter, r *http.Request) {
+	st := w.srv.st.State()
+	cert := st.Certificates[r.PathValue("id")]
+	if cert == nil {
+		writeJSONErr(rw, http.StatusNotFound, "certificate not found")
+		return
+	}
+	row := makeCertificateRow(cert)
+	if !row.CanDeploy {
+		writeJSONErr(rw, http.StatusConflict, row.DeployDisabledReason)
+		return
+	}
+	type option struct {
+		ID, Name, Address string
+		Available         bool
+	}
+	agents := make([]option, 0, len(cert.TargetAgents))
+	for _, id := range cert.TargetAgents {
+		a := option{ID: id, Name: id}
+		if agent := st.Agents[id]; agent != nil {
+			a.Name = agentLabel(agent)
+			a.Address = agent.Address
+			a.Available = true
+		}
+		agents = append(agents, a)
+	}
+	_ = w.render(rw, r, "certificate-deploy-form", map[string]any{
+		"ID": cert.ID, "RootDomain": cert.RootDomain, "Agents": agents,
+	})
+}
+
 func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
 	id := r.PathValue("id")
-	started, err := w.srv.StartDeploy(id)
+	started, err := w.srv.StartDeployToAgents(id, r.PostForm["agents"])
 	if err != nil {
 		status := http.StatusBadRequest
 		msg := err.Error()
@@ -421,9 +457,9 @@ func (w *Web) handleDeploy(rw http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, errNotFound):
 			status = http.StatusNotFound
 			msg = "certificate not found"
-		case errors.Is(err, errCertNotIssued), errors.Is(err, errNoTargetAgents):
+		case errors.Is(err, errCertNotIssued), errors.Is(err, errNoTargetAgents), errors.Is(err, errNoSelectedAgents):
 			status = http.StatusUnprocessableEntity
-		case errors.Is(err, errCertIssuing):
+		case errors.Is(err, errCertIssuing), errors.Is(err, errInvalidTargetAgent), errors.Is(err, errTargetAgentRemoved):
 			status = http.StatusConflict
 		}
 		writeJSONErr(rw, status, msg)
@@ -447,10 +483,17 @@ func setToastTrigger(rw http.ResponseWriter, message, toastType string) {
 }
 
 func certificateDeploymentComplete(cert *domain.Certificate) bool {
-	if cert == nil || cert.Current == nil || len(cert.TargetAgents) == 0 {
+	if cert == nil {
 		return false
 	}
-	for _, agentID := range cert.TargetAgents {
+	return certificateDeploymentCompleteForAgents(cert, cert.TargetAgents)
+}
+
+func certificateDeploymentCompleteForAgents(cert *domain.Certificate, agents []string) bool {
+	if cert == nil || cert.Current == nil || len(agents) == 0 {
+		return false
+	}
+	for _, agentID := range agents {
 		deploy := cert.Deploys[agentID]
 		if deploy == nil || deploy.Status != domain.StatusSuccess || deploy.VersionID != cert.Current.ID {
 			return false

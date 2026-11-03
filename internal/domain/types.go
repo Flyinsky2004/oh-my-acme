@@ -199,11 +199,25 @@ type AdminAccount struct {
 	CreatedAt           time.Time `json:"created_at"`
 }
 
+// AdminLogin records one Web login attempt. Fingerprints are advisory client metadata.
+type AdminLogin struct {
+	Username          string    `json:"username"`
+	Time              time.Time `json:"time"`
+	IP                string    `json:"ip"`
+	Success           bool      `json:"success"`
+	Device            string    `json:"device"`
+	Browser           string    `json:"browser"`
+	UserAgent         string    `json:"user_agent"`
+	Fingerprint       string    `json:"fingerprint"`
+	FingerprintSource string    `json:"fingerprint_source"`
+}
+
 // State is the full persisted application state. It is the single source of
 // truth loaded from and written to state.json.
 type State struct {
 	Version      int                              `json:"version"`
 	Config       SystemConfig                     `json:"config"`
+	AdminLogins  []AdminLogin                     `json:"admin_logins,omitempty"`
 	Admin        AdminAccount                     `json:"admin"`
 	CAs          map[string]*ACMECA               `json:"cas"`
 	Credentials  map[string]*CloudflareCredential `json:"credentials"`

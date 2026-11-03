@@ -53,3 +53,9 @@ make web-css-check  # 确认已提交 CSS 与源文件一致，不修改工作�
 
 `make build` 不会调用 npm。CI 中的 Web UI workflow 只检查 CSS 产物是否过期，release 工作流仍是纯 Go 构建。
 两个 workflow 都只在发布 GitHub Release（含预发布）时触发，使用该 Release 的标签版本；普通提交、PR、仅推送标签及保存 Release 草稿均不会触发。构建完成后，安装包、安装脚本和校验文件会上传到已发布的 Release。
+
+## 管理员登录记录
+
+Web「设置」展示最近 50 次登录尝试（成功与失败合计），按最新优先排列，超过 50 条自动淘汰最早记录，重启后保留。记录包含用户名、UTC 登录时间、来源 IP、结果、设备 / 系统、浏览器版本、User-Agent 和 SHA-256 浏览器环境指纹；密码和会话令牌不写入记录。指纹由请求头与浏览器的语言、时区、屏幕、平台等环境信息生成，仅供辅助识别，可能变化或被伪造；禁用 JavaScript 时退回请求头指纹。
+
+反向代理部署时，在 Server 的 `config.json` 中设置 `trusted_proxies`（代理 IP 或 CIDR）。仅可信代理的 `X-Forwarded-For` / `X-Real-IP` 会用于来源识别；未配置时记录直连 IP。代理应覆盖客户端提交的转发头，或正确追加实际来源地址。

@@ -7,6 +7,7 @@
 <title>{{if .Setup}}初始化{{else}}登录{{end}} · oh-my-acme</title>
 <link rel="stylesheet" href="{{assetURL "app.css"}}">
 <script src="{{assetURL "htmx.min.js"}}" defer></script>
+<script src="{{assetURL "login.js"}}" defer></script>
 </head>
 <body>
 <main class="auth-shell">
@@ -18,6 +19,7 @@
     </div>
     {{if .Error}}<div class="error-message" role="alert">{{template "icon-alert"}}<span>{{.Error}}</span></div>{{end}}
     <form class="auth-form" method="post" action="{{if .Setup}}/setup{{else}}/login{{end}}">
+      <input type="hidden" name="browser_metadata" id="browser-metadata">
       <div class="field">
         <label class="field-label" for="username">用户名</label>
         <input id="username" name="username" autocomplete="username" required>

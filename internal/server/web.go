@@ -173,7 +173,11 @@ func (w *Web) handleLoginPage(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) handleLoginPost(rw http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
+	r.Body = http.MaxBytesReader(rw, r.Body, 16*1024)
+	if err := r.ParseForm(); err != nil {
+		http.Error(rw, "登录请求无效或过大", http.StatusBadRequest)
+		return
+	}
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	admin := w.srv.getAdmin()
@@ -183,7 +187,13 @@ func (w *Web) handleLoginPost(rw http.ResponseWriter, r *http.Request) {
 		w.redirect(rw, r, "/login")
 		return
 	}
-	if admin.Username == username && verifyPassword(password, admin.PasswordHash) {
+	success := admin.Username == username && verifyPassword(password, admin.PasswordHash)
+	if err := w.recordAdminLogin(r, username, success); err != nil {
+		w.srv.log.Error("persist admin login failed", "err", err)
+		http.Error(rw, "无法保存登录记录，请稍后重试", http.StatusInternalServerError)
+		return
+	}
+	if success {
 		id := w.sessions.create(username)
 		w.sessionCookieAndSet(rw, id)
 		w.redirect(rw, r, "/")
@@ -685,7 +695,8 @@ func (w *Web) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	}
 	tgStatus, tgError := w.srv.TelegramRuntimeStatus()
 	w.page(rw, r, "设置", "/settings", "settings", map[string]any{
-		"CAs": cas, "Email": st.Config.ACMEAccountEmail,
+		"AdminLogins": st.AdminLogins,
+		"CAs":         cas, "Email": st.Config.ACMEAccountEmail,
 		"RenewDays": st.Config.RenewPreferenceDays, "DNSSleep": st.Config.DNSSleepSeconds,
 		"ServerHost": st.Config.ServerHost, "HostHint": hostHint,
 		"TGEnabled": st.Config.TelegramEnabled, "TGTokenSet": st.Config.TelegramToken != "",

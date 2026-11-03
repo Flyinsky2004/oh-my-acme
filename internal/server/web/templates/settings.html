@@ -8,6 +8,36 @@
 </header>
 
 <div class="section-stack">
+  <section class="glass-panel" aria-labelledby="login-history-title">
+    <div class="panel-header">
+      <div>
+        <h2 id="login-history-title">管理员登录记录</h2>
+        <p class="muted">成功和失败尝试合计保留最近 50 次，自动淘汰最早记录。时间带时区；设备与指纹仅供辅助识别。</p>
+      </div>
+    </div>
+    <div class="table-scroll" role="region" tabindex="0" aria-label="管理员最近登录记录">
+      <table>
+        <caption class="sr-only">最近 50 次管理员登录尝试，最新记录在前</caption>
+        <thead><tr>
+          <th scope="col">登录时间</th><th scope="col">用户名</th><th scope="col">来源 IP</th>
+          <th scope="col">结果</th><th scope="col">设备 / 系统</th><th scope="col">浏览器</th><th scope="col">浏览器指纹</th>
+        </tr></thead>
+        <tbody>
+        {{range .AdminLogins}}
+          <tr>
+            <td><time datetime="{{.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.Time.Format "2006-01-02 15:04:05 Z07:00"}}</time></td>
+            <td>{{.Username}}</td><td><code>{{.IP}}</code></td>
+            <td>{{if .Success}}<span class="badge success">成功</span>{{else}}<span class="badge failed">失败</span>{{end}}</td>
+            <td>{{.Device}}</td><td>{{.Browser}}</td>
+            <td><details><summary><code>{{slice .Fingerprint 0 12}}</code></summary><p><code>{{.Fingerprint}}</code></p><p class="hint">{{.FingerprintSource}}</p><p class="hint">{{.UserAgent}}</p></details></td>
+          </tr>
+        {{else}}
+          <tr><td colspan="7" class="muted">暂无登录记录。</td></tr>
+        {{end}}
+        </tbody>
+      </table>
+    </div>
+  </section>
   <section class="glass-panel" aria-labelledby="update-title">
     <div class="panel-header">
       <div>

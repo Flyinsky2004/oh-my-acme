@@ -15,16 +15,19 @@ import (
 const twoFactorCipherPrefix = "aes256gcm:v1:"
 const twoFactorAssociatedData = "oh-my-acme/admin/totp/v1"
 
-var errTwoFactorKeyRequired = errors.New("TWO_FACTOR_ENCRYPTION_KEY is required for stored or new two-factor secrets")
+var errTwoFactorKeyRequired = errors.New("two_factor_encryption_key (or TWO_FACTOR_ENCRYPTION_KEY) is required for stored or new two-factor secrets")
 
-func loadTwoFactorCipher() (cipher.AEAD, error) {
+func loadTwoFactorCipher(configKey string) (cipher.AEAD, error) {
 	raw := strings.TrimSpace(os.Getenv("TWO_FACTOR_ENCRYPTION_KEY"))
+	if raw == "" {
+		raw = strings.TrimSpace(configKey)
+	}
 	if raw == "" {
 		return nil, nil
 	}
 	key, err := base64.StdEncoding.Strict().DecodeString(raw)
 	if err != nil || len(key) != 32 {
-		return nil, errors.New("TWO_FACTOR_ENCRYPTION_KEY must be a Base64-encoded 32-byte key")
+		return nil, errors.New("two_factor_encryption_key (or TWO_FACTOR_ENCRYPTION_KEY) must be a Base64-encoded 32-byte key")
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -58,7 +61,7 @@ func decryptTwoFactorSecret(aead cipher.AEAD, encrypted string) (string, error) 
 	}
 	plain, err := aead.Open(nil, nil, sealed, []byte(twoFactorAssociatedData))
 	if err != nil || len(plain) == 0 {
-		return "", errors.New("cannot decrypt two-factor secret: check TWO_FACTOR_ENCRYPTION_KEY and state integrity")
+		return "", errors.New("cannot decrypt two-factor secret: check two_factor_encryption_key / TWO_FACTOR_ENCRYPTION_KEY and state integrity")
 	}
 	return string(plain), nil
 }
@@ -69,7 +72,7 @@ func (s *Server) initTwoFactorEncryption() error {
 	if s.twoFactorCipher != nil {
 		return nil
 	}
-	aead, err := loadTwoFactorCipher()
+	aead, err := loadTwoFactorCipher(s.cfg.TwoFactorEncryptionKey)
 	if err != nil {
 		return err
 	}

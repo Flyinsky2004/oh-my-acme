@@ -72,23 +72,20 @@ TOTP 绑定密钥使用 AES-256-GCM 加密后保存在权限为 `0600` 的 `stat
 
 ### 配置绑定密钥加密
 
-服务进程通过环境变量 `TWO_FACTOR_ENCRYPTION_KEY` 读取加密密钥，格式为 **32 字节随机数据的标准 Base64 编码**。它不会自动生成、写入 `config.json`、账户状态或日志。可使用 `openssl rand -base64 32` 生成一次，并将结果妥善保存。
+在现有 `/opt/oh-my-acme-server/config.json` 中添加 `two_factor_encryption_key`，格式为 **32 字节随机数据的标准 Base64 编码**。可使用 `openssl rand -base64 32` 生成一次，将结果填入现有配置文件的这个字段（保留其他字段）：
 
-安装脚本生成的 systemd 服务会读取 `/opt/oh-my-acme-server/server.env`（自定义安装目录时使用对应目录）。创建权限为 `0600` 的文件，填写：
-
-```dotenv
-TWO_FACTOR_ENCRYPTION_KEY=这里填写生成的Base64密钥
+```json
+{
+  "two_factor_encryption_key": "这里填写生成的Base64密钥"
+}
 ```
 
-已有 systemd 服务可执行 `sudo systemctl edit oh-my-acme-server`，加入：
+配置文件权限应为 `0600`。部署新版程序并修改配置后，执行 `sudo systemctl restart oh-my-acme-server` 即可。自定义安装目录时使用对应配置文件。密钥不会自动生成，也不会写入账户状态或日志。
 
-```ini
-[Service]
-EnvironmentFile=/opt/oh-my-acme-server/server.env
-```
+同时兼容环境变量 `TWO_FACTOR_ENCRYPTION_KEY`：**非空环境变量优先于配置文件**，空值或未设置时使用配置文件。此前通过环境文件配置过密钥的部署可以继续使用；迁移到 `config.json` 时应复制同一个密钥，并移除旧环境变量以避免覆盖。
 
-保存后执行 `sudo systemctl daemon-reload` 和 `sudo systemctl restart oh-my-acme-server`。直接运行程序时，将该变量设置到启动程序的环境中即可；只在交互终端中 `export` 不会传给 systemd 服务。
+安装脚本生成的 systemd 服务也会读取可选的 `/opt/oh-my-acme-server/server.env`。需要使用环境变量的已有服务可通过 `sudo systemctl edit oh-my-acme-server` 添加 `[Service]` 下的 `EnvironmentFile=/opt/oh-my-acme-server/server.env`，环境文件内填写 `TWO_FACTOR_ENCRYPTION_KEY=生成的Base64密钥` 并设置权限 `0600`，然后执行 `sudo systemctl daemon-reload` 和 `sudo systemctl restart oh-my-acme-server`。只在交互终端中 `export` 不会传给 systemd 服务。
 
-未绑定 2FA 时可以不配置此变量，但无法开始绑定。存在绑定密钥（包括本地备份）时，缺失、格式错误或无法解密的密钥会阻止启动；运行中解密失败也不会绕过验证。请备份并在重启、更新后保留同一个密钥，直接替换或丢失会导致已有绑定数据无法解密。
+未绑定 2FA 时可以不配置加密密钥，但无法开始绑定。存在绑定密钥（包括本地备份）时，缺失、格式错误或无法解密的密钥会阻止启动；运行中解密失败也不会绕过验证。请备份并在重启、更新后保留同一个密钥，直接替换或丢失会导致已有绑定数据无法解密。
 
 升级时，在启动监听和常规状态写入前，自动迁移 `state.json` 与 `state.json.backup` 内的旧版明文绑定密钥，保留原绑定、恢复码和防重放状态；迁移失败则停止启动。其他位置的历史备份不在迁移范围内。

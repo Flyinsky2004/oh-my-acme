@@ -176,7 +176,7 @@ func (w *Web) handleTwoFactorStart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if w.srv.twoFactorCipher == nil {
-		http.Error(rw, "请先在服务端配置 TWO_FACTOR_ENCRYPTION_KEY 后重启，再绑定两步验证", http.StatusServiceUnavailable)
+		http.Error(rw, "请先在服务端 config.json 配置 two_factor_encryption_key 后重启，再绑定两步验证", http.StatusServiceUnavailable)
 		return
 	}
 	admin := w.srv.getAdmin()

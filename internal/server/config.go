@@ -12,6 +12,10 @@ type Config struct {
 	LogDir        string `json:"log_dir"`
 	LogLevel      string `json:"log_level"`
 
+	// TwoFactorEncryptionKey is a Base64-encoded 32-byte AES key. A nonempty
+	// TWO_FACTOR_ENCRYPTION_KEY environment variable overrides this value.
+	TwoFactorEncryptionKey string `json:"two_factor_encryption_key,omitempty"`
+
 	// External base URL used to build the Web UI / links behind a reverse proxy.
 	BaseURL string `json:"base_url,omitempty"`
 	// TrustedProxies is a list of IP addresses allowed to set X-Forwarded-*.

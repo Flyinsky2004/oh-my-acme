@@ -99,7 +99,8 @@ if [ "$IF_EXISTS" -eq 0 ]; then
   "data_dir": "${INSTALL_DIR}/data",
   "pki_dir": "${INSTALL_DIR}/pki",
   "log_dir": "${INSTALL_DIR}/logs",
-  "log_level": "info"
+  "log_level": "info",
+  "two_factor_encryption_key": ""
 }
 JSON
   chmod 600 "${INSTALL_DIR}/config.json"

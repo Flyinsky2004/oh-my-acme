@@ -6,5 +6,6 @@
   "data_dir": ".oh-my-acme-server/data",
   "pki_dir": ".oh-my-acme-server/pki",
   "log_dir": ".oh-my-acme-server/logs",
-  "log_level": "debug"
+  "log_level": "debug",
+  "two_factor_encryption_key": ""
 }

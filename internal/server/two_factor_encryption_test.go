@@ -19,7 +19,7 @@ const testTwoFactorKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 func testTwoFactorCipher(t *testing.T) cipher.AEAD {
 	t.Helper()
 	t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", testTwoFactorKey)
-	aead, err := loadTwoFactorCipher()
+	aead, err := loadTwoFactorCipher("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestTwoFactorCipherAuthentication(t *testing.T) {
 		}
 	}
 	t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 32))))
-	wrong, err := loadTwoFactorCipher()
+	wrong, err := loadTwoFactorCipher("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +67,12 @@ func TestTwoFactorCipherAuthentication(t *testing.T) {
 func TestTwoFactorEncryptionKeyValidation(t *testing.T) {
 	for _, raw := range []string{"not-base64", base64.StdEncoding.EncodeToString(make([]byte, 16)), base64.StdEncoding.EncodeToString(make([]byte, 24)), base64.StdEncoding.EncodeToString(make([]byte, 33))} {
 		t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", raw)
-		if _, err := loadTwoFactorCipher(); err == nil || strings.Contains(err.Error(), raw) {
+		if _, err := loadTwoFactorCipher(""); err == nil || strings.Contains(err.Error(), raw) {
 			t.Fatal("invalid key accepted or leaked")
 		}
 	}
 	t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", "")
-	if aead, err := loadTwoFactorCipher(); err != nil || aead != nil {
+	if aead, err := loadTwoFactorCipher(""); err != nil || aead != nil {
 		t.Fatal("missing optional key rejected before 2FA is configured")
 	}
 }
@@ -199,5 +199,100 @@ func TestEncryptedTwoFactorRecoveryCannotBypassDecryption(t *testing.T) {
 	}
 	if len(w.srv.getAdmin().TwoFactor.RecoveryHashes) != 10 {
 		t.Fatal("recovery code consumed on decryption failure")
+	}
+}
+
+func TestTwoFactorConfigKeyAndEnvironmentPrecedence(t *testing.T) {
+	otherKey := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 32)))
+	for _, tt := range []struct {
+		name, config, env, want string
+		wantErr                 bool
+	}{
+		{name: "config only", config: testTwoFactorKey, want: testTwoFactorKey},
+		{name: "environment overrides config", config: testTwoFactorKey, env: otherKey, want: otherKey},
+		{name: "blank environment falls back", config: testTwoFactorKey, env: "  ", want: testTwoFactorKey},
+		{name: "valid environment overrides invalid config", config: "bad", env: otherKey, want: otherKey},
+		{name: "invalid environment fails closed", config: testTwoFactorKey, env: "bad", wantErr: true},
+		{name: "invalid config fails closed", config: "bad", wantErr: true},
+		{name: "both absent"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", "")
+			var reference string
+			if tt.want != "" {
+				baseline, err := loadTwoFactorCipher(tt.want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reference, err = encryptTwoFactorSecret(baseline, "test-secret")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", tt.env)
+			aead, err := loadTwoFactorCipher(tt.config)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("invalid configured key accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want == "" {
+				if aead != nil {
+					t.Fatal("missing key unexpectedly configured")
+				}
+				return
+			}
+			if plain, err := decryptTwoFactorSecret(aead, reference); err != nil || plain != "test-secret" {
+				t.Fatal("wrong key precedence")
+			}
+		})
+	}
+}
+
+func TestTwoFactorConfigFileStartupAndEncryptedRestart(t *testing.T) {
+	t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", "")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := SaveConfigFile(configPath, Config{TwoFactorEncryptionKey: testTwoFactorKey}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfigFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TwoFactorEncryptionKey != testTwoFactorKey {
+		t.Fatal("config key lost on round trip")
+	}
+	st, err := store.Open(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWeb(&Server{cfg: cfg, st: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, _ := enableTestFactor(t, w)
+	data, err := os.ReadFile(st.StatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), testTwoFactorKey) || strings.Contains(string(data), secret) {
+		t.Fatal("plaintext key or secret leaked into state")
+	}
+	reopened, err := store.Open(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewWeb(&Server{cfg: cfg, st: reopened})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := totp.GenerateCode(secret, time.Now())
+	if ok, err := restarted.consumeSecondFactor(code); err != nil || !ok {
+		t.Fatal("config-file key failed to decrypt after restart")
 	}
 }

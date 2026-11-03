@@ -68,4 +68,27 @@ Web「设置」展示最近 50 次登录尝试（成功与失败合计），按�
 
 启用时显示 10 个一次性恢复码，请立即妥善保存；服务端只保存恢复码哈希，之后无法再次查看。丢失手机时可用密码和一个未使用的恢复码登录。关闭两步验证也需要当前密码及有效验证码或恢复码；需要换绑或更新恢复码时，可关闭后重新绑定。启用和关闭均会撤销其他 Web 会话。
 
-TOTP 密钥与防重放状态随账户保存在权限为 `0600` 的 `state.json` 中，备份也包含敏感信息，应与现有凭据一并妥善保管。两步验证仅用于管理员 Web 登录。
+TOTP 绑定密钥使用 AES-256-GCM 加密后保存在权限为 `0600` 的 `state.json` 中，每次加密使用新的随机 nonce，并校验认证标签。恢复码继续只保存哈希，防重放状态随账户持久保存。两步验证仅用于管理员 Web 登录。
+
+### 配置绑定密钥加密
+
+服务进程通过环境变量 `TWO_FACTOR_ENCRYPTION_KEY` 读取加密密钥，格式为 **32 字节随机数据的标准 Base64 编码**。它不会自动生成、写入 `config.json`、账户状态或日志。可使用 `openssl rand -base64 32` 生成一次，并将结果妥善保存。
+
+安装脚本生成的 systemd 服务会读取 `/opt/oh-my-acme-server/server.env`（自定义安装目录时使用对应目录）。创建权限为 `0600` 的文件，填写：
+
+```dotenv
+TWO_FACTOR_ENCRYPTION_KEY=这里填写生成的Base64密钥
+```
+
+已有 systemd 服务可执行 `sudo systemctl edit oh-my-acme-server`，加入：
+
+```ini
+[Service]
+EnvironmentFile=/opt/oh-my-acme-server/server.env
+```
+
+保存后执行 `sudo systemctl daemon-reload` 和 `sudo systemctl restart oh-my-acme-server`。直接运行程序时，将该变量设置到启动程序的环境中即可；只在交互终端中 `export` 不会传给 systemd 服务。
+
+未绑定 2FA 时可以不配置此变量，但无法开始绑定。存在绑定密钥（包括本地备份）时，缺失、格式错误或无法解密的密钥会阻止启动；运行中解密失败也不会绕过验证。请备份并在重启、更新后保留同一个密钥，直接替换或丢失会导致已有绑定数据无法解密。
+
+升级时，在启动监听和常规状态写入前，自动迁移 `state.json` 与 `state.json.backup` 内的旧版明文绑定密钥，保留原绑定、恢复码和防重放状态；迁移失败则停止启动。其他位置的历史备份不在迁移范围内。

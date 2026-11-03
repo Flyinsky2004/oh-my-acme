@@ -8,6 +8,7 @@ package server
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -83,13 +84,14 @@ const (
 // Server wires the store, PKI and ACME service, exposes business operations
 // and HTTP handlers.
 type Server struct {
-	cfg        Config
-	log        *slog.Logger
-	st         *store.Store
-	ca         *pki.CA
-	cliTLSCfg  *tls.Config     // client cert + CA used to connect to agents
-	ctlTLSCert tls.Certificate // control port server cert
-	clientCert *pki.KeyPair    // server push client identity
+	twoFactorCipher cipher.AEAD
+	cfg             Config
+	log             *slog.Logger
+	st              *store.Store
+	ca              *pki.CA
+	cliTLSCfg       *tls.Config     // client cert + CA used to connect to agents
+	ctlTLSCert      tls.Certificate // control port server cert
+	clientCert      *pki.KeyPair    // server push client identity
 
 	acmeSvc      *acme.Service
 	serverLeafFP string // SHA-256 of the server's TLS leaf cert (agent pin)
@@ -152,6 +154,10 @@ func New(cfg Config, log *slog.Logger, st *store.Store, ca *pki.CA, clientCert *
 		ctx:          lifecycleCtx,
 		cancel:       cancel,
 		restartCh:    make(chan struct{}, 1),
+	}
+	if err := s.initTwoFactorEncryption(); err != nil {
+		cancel()
+		return nil, err
 	}
 	s.ensureDefaults()
 	s.tg = newTelegramController(s)

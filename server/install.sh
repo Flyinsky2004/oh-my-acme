@@ -121,6 +121,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+EnvironmentFile=-${INSTALL_DIR}/server.env
 ExecStart=${BIN_TARGET} -config ${INSTALL_DIR}/config.json
 Restart=on-failure
 RestartSec=3

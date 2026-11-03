@@ -378,3 +378,62 @@ func validateID(id string) error {
 	}
 	return nil
 }
+
+// TransformSnapshots migrates the live state and its backup without copying an
+// old plaintext primary over the sanitized backup. All transforms complete
+// before writes; the backup is replaced atomically before the primary. Call
+// only during startup, before readers, writers or listeners are started.
+func (s *Store) TransformSnapshots(transform func(*domain.State) (bool, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := json.Marshal(s.state)
+	if err != nil {
+		return err
+	}
+	var next domain.State
+	if err := json.Unmarshal(data, &next); err != nil {
+		return err
+	}
+	changed, err := transform(&next)
+	if err != nil {
+		return err
+	}
+	backupPath := s.StatePath() + ".backup"
+	backupData, err := os.ReadFile(backupPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read state backup: %w", err)
+	}
+	var backup domain.State
+	backupChanged := false
+	if err == nil {
+		if err := json.Unmarshal(backupData, &backup); err != nil {
+			return fmt.Errorf("parse state backup for migration: %w", err)
+		}
+		backupChanged, err = transform(&backup)
+		if err != nil {
+			return err
+		}
+	}
+	writeSnapshot := func(path string, state domain.State) error {
+		data, err := json.MarshalIndent(state, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := writeFileSync(path+".tmp", data, 0o600); err != nil {
+			return err
+		}
+		return os.Rename(path+".tmp", path)
+	}
+	if backupChanged {
+		if err := writeSnapshot(backupPath, backup); err != nil {
+			return fmt.Errorf("migrate state backup: %w", err)
+		}
+	}
+	if changed {
+		if err := writeSnapshot(s.StatePath(), next); err != nil {
+			return fmt.Errorf("migrate state: %w", err)
+		}
+		s.state = next
+	}
+	return nil
+}

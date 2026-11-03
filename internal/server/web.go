@@ -36,6 +36,11 @@ func NewWeb(s *Server) (*Web, error) {
 	if err != nil {
 		return nil, err
 	}
+	if s != nil {
+		if err := s.initTwoFactorEncryption(); err != nil {
+			return nil, err
+		}
+	}
 	return &Web{srv: s, tmpl: tmpl, sessions: newSessionStore(), cookie: "omc_session"}, nil
 }
 

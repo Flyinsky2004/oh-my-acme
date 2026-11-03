@@ -37,6 +37,7 @@ func TestLoginClientIP(t *testing.T) {
 
 func loginHistoryWeb(t *testing.T) *Web {
 	t.Helper()
+	t.Setenv("TWO_FACTOR_ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

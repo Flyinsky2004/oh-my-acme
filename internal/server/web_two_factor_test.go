@@ -103,6 +103,9 @@ func TestTwoFactorEnrollmentAndDisable(t *testing.T) {
 	}
 	id = rw.Result().Cookies()[0].Value
 	stateJSON, _ := json.Marshal(w.srv.st.State())
+	if strings.Contains(string(stateJSON), s.pendingSecret) || w.srv.getAdmin().TwoFactor.Secret != "" || w.srv.getAdmin().TwoFactor.EncryptedSecret == "" {
+		t.Fatal("enrollment persisted an unencrypted binding secret")
+	}
 	if strings.Contains(string(stateJSON), codes[0]) || strings.Contains(string(stateJSON), strings.ReplaceAll(codes[0], "-", "")) {
 		t.Fatal("plaintext recovery code persisted")
 	}
@@ -120,7 +123,7 @@ func TestTwoFactorEnrollmentAndDisable(t *testing.T) {
 	}
 	form.Set("password", "test-password")
 	rw = twoFactorRequest(w, "POST", "/settings/2fa/disable", id, form)
-	if rw.Code != 302 || w.srv.getAdmin().TwoFactor.Enabled || w.sessions.valid(id) || w.srv.getAdmin().TwoFactor.Secret != "" {
+	if rw.Code != 302 || w.srv.getAdmin().TwoFactor.Enabled || w.sessions.valid(id) || w.srv.getAdmin().TwoFactor.Secret != "" || w.srv.getAdmin().TwoFactor.EncryptedSecret != "" {
 		t.Fatal("disable failed")
 	}
 }

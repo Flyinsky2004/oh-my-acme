@@ -1,6 +1,8 @@
 package store
 
 import (
+	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -56,5 +58,55 @@ func TestWriteAgentDeployLogLastWriteWins(t *testing.T) {
 	}
 	if empty != "" {
 		t.Fatalf("missing log = %q, want empty", empty)
+	}
+}
+
+func TestTransformSnapshotsValidatesBothBeforeWriting(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"backup", "primary"} {
+		if err := st.WithState(true, func(s *domain.State) error { s.Admin.Username = name; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary, _ := os.ReadFile(st.StatePath())
+	backup, _ := os.ReadFile(st.StatePath() + ".backup")
+	err = st.TransformSnapshots(func(s *domain.State) (bool, error) {
+		if s.Admin.Username == "backup" {
+			return false, errors.New("reject backup")
+		}
+		s.Admin.Username = "changed"
+		return true, nil
+	})
+	if err == nil {
+		t.Fatal("backup validation failure ignored")
+	}
+	afterPrimary, _ := os.ReadFile(st.StatePath())
+	afterBackup, _ := os.ReadFile(st.StatePath() + ".backup")
+	if string(primary) != string(afterPrimary) || string(backup) != string(afterBackup) || st.State().Admin.Username != "primary" {
+		t.Fatal("failed migration changed state")
+	}
+}
+
+func TestTransformSnapshotsBackupWriteFailurePreservesPrimary(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.WithState(true, func(s *domain.State) error { s.Admin.Username = "original"; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary, _ := os.ReadFile(st.StatePath())
+	if err := os.Mkdir(st.StatePath()+".backup.tmp", 0700); err != nil {
+		t.Fatal(err)
+	}
+	err = st.TransformSnapshots(func(s *domain.State) (bool, error) { s.Admin.Username = "changed"; return true, nil })
+	after, _ := os.ReadFile(st.StatePath())
+	if err == nil || string(primary) != string(after) || st.State().Admin.Username != "original" {
+		t.Fatal("backup failure did not abort primary migration")
 	}
 }

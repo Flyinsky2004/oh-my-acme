@@ -200,13 +200,14 @@ type AdminAccount struct {
 	CreatedAt           time.Time      `json:"created_at"`
 }
 
-// AdminTwoFactor uses a Google Authenticator compatible TOTP secret. The state
-// file is owner-only; recovery codes are stored only as SHA-256 hashes.
+// AdminTwoFactor stores an AES-256-GCM encrypted TOTP secret and hashed recovery
+// codes. Secret is retained only for migration of legacy plaintext state.
 type AdminTwoFactor struct {
-	Enabled        bool     `json:"enabled"`
-	Secret         string   `json:"secret,omitempty"`
-	LastStep       int64    `json:"last_step,omitempty"`
-	RecoveryHashes []string `json:"recovery_hashes,omitempty"`
+	Enabled         bool     `json:"enabled"`
+	Secret          string   `json:"secret,omitempty"`
+	EncryptedSecret string   `json:"encrypted_secret,omitempty"`
+	LastStep        int64    `json:"last_step,omitempty"`
+	RecoveryHashes  []string `json:"recovery_hashes,omitempty"`
 }
 
 // AdminLogin records one Web login attempt. Fingerprints are advisory client metadata.

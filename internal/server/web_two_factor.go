@@ -73,6 +73,23 @@ func newRecoveryCodes() ([]string, []string, error) {
 // Store.WithState does not roll back failed disk writes. Restore this field on
 // failure so a failed activation cannot enable 2FA without showing recovery codes.
 func (w *Web) saveTwoFactor(next domain.AdminTwoFactor) error {
+	if next.Enabled {
+		if w.srv.twoFactorCipher == nil {
+			return errTwoFactorKeyRequired
+		}
+		if next.Secret != "" {
+			encrypted, err := encryptTwoFactorSecret(w.srv.twoFactorCipher, next.Secret)
+			if err != nil {
+				return err
+			}
+			next.EncryptedSecret, next.Secret = encrypted, ""
+		}
+		if _, err := decryptTwoFactorSecret(w.srv.twoFactorCipher, next.EncryptedSecret); err != nil {
+			return err
+		}
+	} else {
+		next.Secret, next.EncryptedSecret = "", ""
+	}
 	previous := w.srv.getAdmin().TwoFactor
 	err := w.srv.st.WithState(true, func(st *domain.State) error { st.Admin.TwoFactor = next; return nil })
 	if err != nil {
@@ -86,7 +103,11 @@ func (w *Web) consumeSecondFactor(code string) (bool, error) {
 	if !factor.Enabled {
 		return false, nil
 	}
-	if step, ok := matchingTOTPStep(factor.Secret, code, time.Now(), factor.LastStep); ok {
+	secret, err := decryptTwoFactorSecret(w.srv.twoFactorCipher, factor.EncryptedSecret)
+	if err != nil {
+		return false, err
+	}
+	if step, ok := matchingTOTPStep(secret, code, time.Now(), factor.LastStep); ok {
 		factor.LastStep = step
 	} else {
 		hash := recoveryHash(code)
@@ -152,6 +173,10 @@ func (w *Web) handleTwoFactorStart(rw http.ResponseWriter, r *http.Request) {
 	defer w.authMu.Unlock()
 	sess, ok := w.securityForm(rw, r)
 	if !ok || !w.allowAuthAttempt(rw) {
+		return
+	}
+	if w.srv.twoFactorCipher == nil {
+		http.Error(rw, "请先在服务端配置 TWO_FACTOR_ENCRYPTION_KEY 后重启，再绑定两步验证", http.StatusServiceUnavailable)
 		return
 	}
 	admin := w.srv.getAdmin()

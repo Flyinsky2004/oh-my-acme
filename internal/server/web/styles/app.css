@@ -839,6 +839,11 @@
     min-width: 16rem;
   }
 
+  .two-factor-qr {
+    max-width: 100%;
+    height: auto;
+  }
+
   code {
     padding: 0.16rem 0.38rem;
     color: var(--ink);

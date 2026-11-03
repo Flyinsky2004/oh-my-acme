@@ -5,10 +5,13 @@ import (
 	"errors"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Flyinsky2004/oh-my-acme/internal/domain"
@@ -18,10 +21,13 @@ import (
 // Web is the HTTP handler for the Web UI. It renders Go templates with HTMX
 // for interactivity and enforces a single-admin login.
 type Web struct {
-	srv      *Server
-	tmpl     *template.Template
-	sessions *sessionStore
-	cookie   string
+	srv          *Server
+	tmpl         *template.Template
+	sessions     *sessionStore
+	cookie       string
+	authMu       sync.Mutex
+	authWindow   time.Time
+	authAttempts int
 }
 
 // NewWeb builds the Web handler, parsing the embedded templates.
@@ -75,6 +81,11 @@ func (w *Web) Handler() http.Handler {
 	mux.Handle("POST /agents/{id}/update", w.auth(w.handleAgentUpdate))
 	mux.Handle("POST /agents/{id}/delete", w.auth(w.handleAgentDelete))
 
+	mux.Handle("GET /settings/2fa", w.auth(w.handleTwoFactorPage))
+	mux.Handle("GET /settings/2fa/qr", w.auth(w.handleTwoFactorQR))
+	mux.Handle("POST /settings/2fa/start", w.auth(w.handleTwoFactorStart))
+	mux.Handle("POST /settings/2fa/enable", w.auth(w.handleTwoFactorEnable))
+	mux.Handle("POST /settings/2fa/disable", w.auth(w.handleTwoFactorDisable))
 	mux.Handle("GET /settings", w.auth(w.handleSettings))
 	mux.Handle("POST /settings", w.auth(w.handleSettingsSave))
 	mux.Handle("POST /settings/update", w.auth(w.handleServerUpdate))
@@ -89,6 +100,10 @@ func (w *Web) secure(child http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("X-Content-Type-Options", "nosniff")
 		rw.Header().Set("X-Frame-Options", "DENY")
+		rw.Header().Set("Referrer-Policy", "same-origin")
+		if !strings.HasPrefix(r.URL.Path, "/static/") {
+			rw.Header().Set("Cache-Control", "no-store")
+		}
 		child.ServeHTTP(rw, r)
 	})
 }
@@ -106,14 +121,14 @@ func (w *Web) auth(next http.HandlerFunc) http.Handler {
 	})
 }
 
-func (w *Web) sessionCookieAndSet(rw http.ResponseWriter, id string) {
+func (w *Web) sessionCookieAndSet(rw http.ResponseWriter, r *http.Request, id string) {
 	http.SetCookie(rw, &http.Cookie{
 		Name:     w.cookie,
 		Value:    id,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   rw.Header().Get("X-Forwarded-Proto") == "https",
+		Secure:   w.requestHTTPS(r),
 		MaxAge:   int((24 * time.Hour).Seconds()),
 	})
 }
@@ -169,10 +184,15 @@ func (w *Web) handleLoginPage(rw http.ResponseWriter, r *http.Request) {
 		w.render(rw, r, "login", map[string]any{"Setup": true})
 		return
 	}
-	w.render(rw, r, "login", map[string]any{})
+	w.render(rw, r, "login", map[string]any{"TwoFactorEnabled": w.srv.getAdmin().TwoFactor.Enabled})
 }
 
 func (w *Web) handleLoginPost(rw http.ResponseWriter, r *http.Request) {
+	w.authMu.Lock()
+	defer w.authMu.Unlock()
+	if !w.allowAuthAttempt(rw) {
+		return
+	}
 	r.Body = http.MaxBytesReader(rw, r.Body, 16*1024)
 	if err := r.ParseForm(); err != nil {
 		http.Error(rw, "登录请求无效或过大", http.StatusBadRequest)
@@ -188,6 +208,15 @@ func (w *Web) handleLoginPost(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	success := admin.Username == username && verifyPassword(password, admin.PasswordHash)
+	if success && admin.TwoFactor.Enabled {
+		var err error
+		success, err = w.consumeSecondFactor(r.FormValue("otp"))
+		if err != nil {
+			w.srv.log.Error("persist second factor failed", "err", err)
+			http.Error(rw, "验证失败，请稍后重试", http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := w.recordAdminLogin(r, username, success); err != nil {
 		w.srv.log.Error("persist admin login failed", "err", err)
 		http.Error(rw, "无法保存登录记录，请稍后重试", http.StatusInternalServerError)
@@ -195,11 +224,15 @@ func (w *Web) handleLoginPost(rw http.ResponseWriter, r *http.Request) {
 	}
 	if success {
 		id := w.sessions.create(username)
-		w.sessionCookieAndSet(rw, id)
+		w.sessionCookieAndSet(rw, r, id)
 		w.redirect(rw, r, "/")
 		return
 	}
-	w.render(rw, r, "login", map[string]any{"Error": "用户名或密码错误"})
+	message := "用户名或密码错误"
+	if admin.TwoFactor.Enabled {
+		message = "用户名、密码或验证码错误；已使用的验证码不可重复使用"
+	}
+	w.render(rw, r, "login", map[string]any{"Error": message, "TwoFactorEnabled": w.srv.getAdmin().TwoFactor.Enabled})
 }
 
 func (w *Web) handleSetup(rw http.ResponseWriter, r *http.Request) {
@@ -695,8 +728,9 @@ func (w *Web) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	}
 	tgStatus, tgError := w.srv.TelegramRuntimeStatus()
 	w.page(rw, r, "设置", "/settings", "settings", map[string]any{
-		"AdminLogins": st.AdminLogins,
-		"CAs":         cas, "Email": st.Config.ACMEAccountEmail,
+		"AdminLogins":      st.AdminLogins,
+		"TwoFactorEnabled": st.Admin.TwoFactor.Enabled,
+		"CAs":              cas, "Email": st.Config.ACMEAccountEmail,
 		"RenewDays": st.Config.RenewPreferenceDays, "DNSSleep": st.Config.DNSSleepSeconds,
 		"ServerHost": st.Config.ServerHost, "HostHint": hostHint,
 		"TGEnabled": st.Config.TelegramEnabled, "TGTokenSet": st.Config.TelegramToken != "",
@@ -973,4 +1007,20 @@ func certificateDeployError(cert *domain.Certificate) string {
 		}
 	}
 	return strings.Join(parts, "；")
+}
+
+// Forwarded HTTPS is accepted only from a configured proxy, matching IP attribution.
+func (w *Web) requestHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if r.Header.Get("X-Forwarded-Proto") != "https" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(host)
+	return err == nil && w.srv != nil && trustedProxyIP(peer.Unmap(), w.srv.cfg.TrustedProxies)
 }

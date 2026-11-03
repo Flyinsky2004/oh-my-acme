@@ -191,12 +191,22 @@ type Task struct {
 // one of the ways to initialise the password on first boot and the password is
 // never persisted in plaintext.
 type AdminAccount struct {
-	Username            string    `json:"username"`
-	PasswordHash        string    `json:"password_hash"`
-	SetupToken          string    `json:"setup_token,omitempty"`
-	SetupTokenExpiresAt time.Time `json:"setup_token_expires_at,omitempty"`
-	SetupTokenUsed      bool      `json:"setup_token_used"`
-	CreatedAt           time.Time `json:"created_at"`
+	TwoFactor           AdminTwoFactor `json:"two_factor,omitempty"`
+	Username            string         `json:"username"`
+	PasswordHash        string         `json:"password_hash"`
+	SetupToken          string         `json:"setup_token,omitempty"`
+	SetupTokenExpiresAt time.Time      `json:"setup_token_expires_at,omitempty"`
+	SetupTokenUsed      bool           `json:"setup_token_used"`
+	CreatedAt           time.Time      `json:"created_at"`
+}
+
+// AdminTwoFactor uses a Google Authenticator compatible TOTP secret. The state
+// file is owner-only; recovery codes are stored only as SHA-256 hashes.
+type AdminTwoFactor struct {
+	Enabled        bool     `json:"enabled"`
+	Secret         string   `json:"secret,omitempty"`
+	LastStep       int64    `json:"last_step,omitempty"`
+	RecoveryHashes []string `json:"recovery_hashes,omitempty"`
 }
 
 // AdminLogin records one Web login attempt. Fingerprints are advisory client metadata.

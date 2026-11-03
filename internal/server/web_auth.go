@@ -63,9 +63,12 @@ func verifyPassword(password, encoded string) bool {
 // --- Sessions ---
 
 type session struct {
-	id        string
-	username  string
-	expiresAt time.Time
+	csrf          string
+	pendingSecret string
+	pendingUntil  time.Time
+	id            string
+	username      string
+	expiresAt     time.Time
 }
 
 // sessionStore is an in-memory map of active admin sessions.
@@ -83,7 +86,7 @@ func (ss *sessionStore) create(username string) (id string) {
 	id = randomHex(24)
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	ss.sessions[id] = session{id: id, username: username, expiresAt: time.Now().Add(ss.ttl)}
+	ss.sessions[id] = session{csrf: randomHex(24), id: id, username: username, expiresAt: time.Now().Add(ss.ttl)}
 	return id
 }
 
@@ -163,4 +166,28 @@ func (s *Server) InitialSetupToken() (string, error) {
 		return "", err
 	}
 	return token, nil
+}
+
+func (ss *sessionStore) get(id string) (session, bool) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	s, ok := ss.sessions[id]
+	return s, ok && time.Now().Before(s.expiresAt)
+}
+
+func (ss *sessionStore) setPending(id, secret string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	s, ok := ss.sessions[id]
+	if ok {
+		s.pendingSecret = secret
+		s.pendingUntil = time.Now().Add(10 * time.Minute)
+		ss.sessions[id] = s
+	}
+}
+
+func (ss *sessionStore) revokeAll() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.sessions = map[string]session{}
 }

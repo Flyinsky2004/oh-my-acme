@@ -8,6 +8,13 @@
 </header>
 
 <div class="section-stack">
+  <section class="glass-panel" aria-labelledby="two-factor-title">
+    <div class="panel-header"><div>
+      <h2 id="two-factor-title">两步验证（2FA）</h2>
+      <p class="muted">使用 Google Authenticator 验证码保护管理员登录。</p>
+    </div><span class="badge {{if .TwoFactorEnabled}}success{{end}}">{{if .TwoFactorEnabled}}已启用{{else}}未启用{{end}}</span></div>
+    <a class="button button-secondary" href="/settings/2fa">{{if .TwoFactorEnabled}}管理两步验证{{else}}设置两步验证{{end}}</a>
+  </section>
   <section class="glass-panel" aria-labelledby="login-history-title">
     <div class="panel-header">
       <div>

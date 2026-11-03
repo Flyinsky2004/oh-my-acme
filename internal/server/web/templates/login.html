@@ -29,6 +29,13 @@
         <input id="password" name="password" type="password" autocomplete="{{if .Setup}}new-password{{else}}current-password{{end}}" {{if .Setup}}minlength="8" aria-describedby="password-hint"{{end}} required>
         {{if .Setup}}<span class="hint" id="password-hint">至少 8 个字符。</span>{{end}}
       </div>
+      {{if and (not .Setup) .TwoFactorEnabled}}
+      <div class="field">
+        <label class="field-label" for="otp">两步验证码或恢复码</label>
+        <input id="otp" name="otp" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" required aria-describedby="otp-hint">
+        <span class="hint" id="otp-hint">输入 Google Authenticator 的 6 位验证码，或一个尚未使用的恢复码。</span>
+      </div>
+      {{end}}
       {{if .Setup}}
       <div class="field">
         <label class="field-label" for="setup-token">初始化令牌</label>

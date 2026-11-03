@@ -91,18 +91,7 @@ func loginClientIP(r *http.Request, proxies []string) string {
 		return "未知"
 	}
 	peer = peer.Unmap()
-	trusted := func(ip netip.Addr) bool {
-		for _, raw := range proxies {
-			raw = strings.TrimSpace(raw)
-			if addr, err := netip.ParseAddr(raw); err == nil && addr.Unmap() == ip {
-				return true
-			}
-			if prefix, err := netip.ParsePrefix(raw); err == nil && prefix.Contains(ip) {
-				return true
-			}
-		}
-		return false
-	}
+	trusted := func(ip netip.Addr) bool { return trustedProxyIP(ip, proxies) }
 	if !trusted(peer) {
 		return peer.String()
 	}
@@ -164,4 +153,17 @@ func loginDeviceBrowser(ua string) (string, string) {
 		}
 	}
 	return device, browser
+}
+
+func trustedProxyIP(ip netip.Addr, proxies []string) bool {
+	for _, raw := range proxies {
+		raw = strings.TrimSpace(raw)
+		if addr, err := netip.ParseAddr(raw); err == nil && addr.Unmap() == ip {
+			return true
+		}
+		if prefix, err := netip.ParsePrefix(raw); err == nil && prefix.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

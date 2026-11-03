@@ -1,0 +1,45 @@
+{{define "two-factor"}}
+<header class="page-header">
+  <div><p class="page-eyebrow">账户安全</p><h1>两步验证</h1><p class="page-description">为管理员登录添加 Google Authenticator 验证码。</p></div>
+  <a class="button button-secondary" href="/settings">返回设置</a>
+</header>
+<section class="glass-panel" aria-labelledby="two-factor-status">
+  <div class="panel-header"><h2 id="two-factor-status">{{if .Enabled}}两步验证已启用{{else if .Secret}}绑定 Google Authenticator{{else}}启用两步验证{{end}}</h2></div>
+  {{if .Error}}<p class="error-message" role="alert">{{template "icon-alert"}}<span>{{.Error}}</span></p>{{end}}
+  {{if .RecoveryCodes}}
+    <div class="section-stack">
+      <p>请立即将以下恢复码保存到安全位置。恢复码仅显示这一次，每个只能使用一次；手机丢失时可用恢复码代替验证码登录。</p>
+      <ul>{{range .RecoveryCodes}}<li><code>{{.}}</code></li>{{end}}</ul>
+      <p class="muted">两步验证已生效，其他会话已退出。刚用于绑定的验证码不可再次使用，请等待新的验证码后登录。</p>
+      <a class="button" href="/settings">已保存，返回设置</a>
+    </div>
+  {{else if .Enabled}}
+    <p class="muted">登录需要密码和验证码。剩余 {{.RecoveryRemaining}} 个恢复码；需要更换手机或获取新的恢复码时，请关闭后重新绑定。关闭后其他会话将退出。</p>
+    <form class="section-stack" method="post" action="/settings/2fa/disable" data-confirm-action="关闭两步验证" data-confirm-target="管理员账户">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="field"><label class="field-label" for="disable-password">当前密码</label><input id="disable-password" name="password" type="password" autocomplete="current-password" required></div>
+      <div class="field"><label class="field-label" for="disable-otp">验证码或恢复码</label><input id="disable-otp" name="otp" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" required></div>
+      <div class="form-actions"><button type="submit">关闭两步验证</button></div>
+    </form>
+  {{else if .Secret}}
+    <div class="section-stack">
+      <p>在 Google Authenticator 中选择“扫描二维码”。也可以选择“输入设置密钥”，类型选择“基于时间”。绑定页面 10 分钟内有效。</p>
+      <img class="two-factor-qr" src="/settings/2fa/qr" width="256" height="256" alt="Google Authenticator 绑定二维码，也可使用下方密钥手动添加">
+      <p>账户：{{.Username}}<br>设置密钥：<code>{{.Secret}}</code></p>
+      <p class="muted">请将手机和服务器时间保持同步。输入应用中的 6 位验证码，验证成功后才会启用。</p>
+      <form class="section-stack" method="post" action="/settings/2fa/enable">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <div class="field"><label class="field-label" for="enable-otp">6 位验证码</label><input id="enable-otp" name="otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></div>
+        <div class="form-actions"><button type="submit">确认启用并生成恢复码</button></div>
+      </form>
+    </div>
+  {{else}}
+    <p class="muted">验证当前密码后，使用 Google Authenticator 扫码绑定。确认验证码前，两步验证保持关闭。</p>
+    <form class="section-stack" method="post" action="/settings/2fa/start">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="field"><label class="field-label" for="start-password">当前密码</label><input id="start-password" name="password" type="password" autocomplete="current-password" required></div>
+      <div class="form-actions"><button type="submit">开始绑定</button></div>
+    </form>
+  {{end}}
+</section>
+{{end}}

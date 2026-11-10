@@ -85,13 +85,26 @@ func (s *Store) load() error {
 	if err := json.Unmarshal(b, &st); err != nil {
 		// Fall back to the backup if the primary file is corrupt.
 		backup := path + ".backup"
-		if bb, berr := os.ReadFile(backup); berr == nil {
-			if json.Unmarshal(bb, &st) == nil {
-				s.state = st
-				return nil
-			}
+		bb, berr := os.ReadFile(backup)
+		if berr != nil {
+			return fmt.Errorf("parse state (and backup): %w", err)
 		}
-		return fmt.Errorf("parse state (and backup): %w", err)
+		if jerr := json.Unmarshal(bb, &st); jerr != nil {
+			return fmt.Errorf("parse state (and backup): %w", err)
+		}
+		if st.Version != stateVersion {
+			return fmt.Errorf("unsupported backup state version %d (want %d)", st.Version, stateVersion)
+		}
+		// Repair the corrupt primary from the good backup before any later
+		// save replaces the backup with the corrupt bytes.
+		if werr := writeFileSync(path+".tmp", bb, 0o600); werr != nil {
+			return fmt.Errorf("repair state from backup: %w", werr)
+		}
+		if rerr := os.Rename(path+".tmp", path); rerr != nil {
+			return fmt.Errorf("repair state from backup: %w", rerr)
+		}
+		s.state = st
+		return nil
 	}
 	if st.Version != stateVersion {
 		return fmt.Errorf("unsupported state version %d (want %d)", st.Version, stateVersion)
@@ -106,59 +119,166 @@ func (s *Store) load() error {
 func (s *Store) State() domain.State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	data, err := json.Marshal(&s.state)
+	snapshot, err := cloneState(&s.state)
 	if err != nil {
-		panic(fmt.Sprintf("clone state: %v", err))
-	}
-	var snapshot domain.State
-	if err := json.Unmarshal(data, &snapshot); err != nil {
 		panic(fmt.Sprintf("clone state: %v", err))
 	}
 	return snapshot
 }
 
-// Save writes the current state to disk atomically. Callers that mutate state
-// should mutate s.state directly under the lock; this method assumes the caller
-// holds s.mu (see the WithState helper).
-func (s *Store) Save() error {
-	return s.saveLocked()
+// cloneState returns a deep copy of st using the same JSON representation that
+// is persisted, so callers can mutate the copy without touching the live state.
+func cloneState(st *domain.State) (domain.State, error) {
+	data, err := json.Marshal(st)
+	if err != nil {
+		return domain.State{}, err
+	}
+	var clone domain.State
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return domain.State{}, err
+	}
+	preserveStateShape(st, &clone)
+	return clone, nil
 }
 
-// WithState provides exclusive access to the in-memory state. The callback may
-// mutate s.state; if commit is true the state is persisted afterwards. Any
-// error from the callback aborts the save.
+// preserveStateShape restores non-nil empty maps/slices that JSON's omitempty
+// would otherwise turn into nil. Callers rely on maps such as
+// Certificate.Deploys being writable after a clone.
+func preserveStateShape(orig, clone *domain.State) {
+	if orig.CAs != nil && clone.CAs == nil {
+		clone.CAs = map[string]*domain.ACMECA{}
+	}
+	if orig.Credentials != nil && clone.Credentials == nil {
+		clone.Credentials = map[string]*domain.CloudflareCredential{}
+	}
+	if orig.Certificates != nil && clone.Certificates == nil {
+		clone.Certificates = map[string]*domain.Certificate{}
+	}
+	if orig.Agents != nil && clone.Agents == nil {
+		clone.Agents = map[string]*domain.Agent{}
+	}
+	if orig.Tokens != nil && clone.Tokens == nil {
+		clone.Tokens = map[string]*domain.TokenRecord{}
+	}
+	if orig.Tasks != nil && clone.Tasks == nil {
+		clone.Tasks = map[string]*domain.Task{}
+	}
+	if orig.AdminLogins != nil && clone.AdminLogins == nil {
+		clone.AdminLogins = []domain.AdminLogin{}
+	}
+	if orig.Admin.TwoFactor.RecoveryHashes != nil && clone.Admin.TwoFactor.RecoveryHashes == nil {
+		clone.Admin.TwoFactor.RecoveryHashes = []string{}
+	}
+	for id, cert := range clone.Certificates {
+		src := orig.Certificates[id]
+		if src == nil {
+			continue
+		}
+		if src.SanDomains != nil && cert.SanDomains == nil {
+			cert.SanDomains = []string{}
+		}
+		if src.TargetAgents != nil && cert.TargetAgents == nil {
+			cert.TargetAgents = []string{}
+		}
+		if src.Deploys != nil && cert.Deploys == nil {
+			cert.Deploys = map[string]*domain.AgentDeployState{}
+		}
+	}
+}
+
+// Save writes the current state to disk atomically.
+func (s *Store) Save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveStateLocked(&s.state)
+}
+
+// WithState provides exclusive access to a copy of the in-memory state. The
+// callback may mutate the copy; if commit is true the copy is persisted and
+// only then becomes the live state. If the callback returns an error or the
+// write fails, both the in-memory state and the on-disk file keep their
+// previous values. This makes read-modify-write sequences (token consumption,
+// first-admin initialization) atomic and rollback-safe.
 func (s *Store) WithState(commit bool, fn func(*domain.State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := fn(&s.state); err != nil {
+	next, err := cloneState(&s.state)
+	if err != nil {
+		return fmt.Errorf("clone state: %w", err)
+	}
+	if err := fn(&next); err != nil {
 		return err
 	}
 	if commit {
-		return s.saveLocked()
+		if err := s.saveStateLocked(&next); err != nil {
+			return err
+		}
 	}
+	s.state = next
 	return nil
 }
 
-func (s *Store) saveLocked() error {
+// Update is WithState(true, fn): an atomic, rollback-safe transaction. Use it
+// for read-modify-write invariants such as first-admin initialization, where a
+// failed disk write must not leave a partially applied in-memory change.
+func (s *Store) Update(fn func(*domain.State) error) error {
+	return s.WithState(true, fn)
+}
+
+func (s *Store) saveStateLocked(st *domain.State) error {
 	path := s.StatePath()
 	tmp := path + ".tmp"
-	b, err := json.MarshalIndent(&s.state, "", "  ")
+	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 	if err := writeFileSync(tmp, b, 0o600); err != nil {
+		removeRegularFile(tmp)
 		return err
 	}
-	// Keep the current file as a backup before replacing it.
-	if old, err := os.ReadFile(path); err == nil && len(old) > 0 {
-		if err := writeFileSync(path+".backup", old, 0o600); err != nil {
+	// Keep the previous good state as a backup before replacing the primary.
+	// A read error other than "not created yet" aborts the save: silently
+	// skipping the backup could let a later promotion overwrite the only
+	// recoverable snapshot.
+	old, readErr := os.ReadFile(path)
+	switch {
+	case readErr == nil && len(old) > 0:
+		backupTmp := path + ".backup.tmp"
+		if err := writeFileSync(backupTmp, old, 0o600); err != nil {
+			removeRegularFile(backupTmp)
+			removeRegularFile(tmp)
 			return err
 		}
+		if err := renameStateFile(backupTmp, path+".backup"); err != nil {
+			removeRegularFile(backupTmp)
+			removeRegularFile(tmp)
+			return fmt.Errorf("replace state backup: %w", err)
+		}
+	case readErr == nil:
+		// Empty primary: nothing to back up.
+	case os.IsNotExist(readErr):
+		// First save: no previous state.
+	default:
+		removeRegularFile(tmp)
+		return fmt.Errorf("read state for backup: %w", readErr)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := renameStateFile(tmp, path); err != nil {
+		removeRegularFile(tmp)
 		return fmt.Errorf("rename state: %w", err)
 	}
 	return nil
+}
+
+// renameStateFile is os.Rename; tests replace it to exercise promotion
+// failures without relying on filesystem-specific behavior.
+var renameStateFile = os.Rename
+
+// removeRegularFile removes a failed temp file without ever deleting a
+// directory or other object a test or operator may have placed at that path.
+func removeRegularFile(path string) {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {
+		_ = os.Remove(path)
+	}
 }
 
 // --- Certificate PEM blob management ---

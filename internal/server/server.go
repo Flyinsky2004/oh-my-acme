@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,26 +40,45 @@ func (s *Server) setupPending() bool {
 func (s *Server) AgentInstallCommand(name, token string) string {
 	host := strings.TrimSpace(s.st.State().Config.ServerHost)
 	if host == "" {
-		// Fall back to auto-detecting the first non-loopback address.
-		ips, err := serverIPs()
-		if err != nil {
-			return ""
-		}
+		// Interface enumeration can be unavailable in a restricted environment.
+		// Keep the loopback fallback even in that case; an administrator may
+		// replace it with the reachable address before running the command.
 		host = "127.0.0.1"
-		if len(ips) > 0 {
+		if ips, err := serverIPs(); err == nil && len(ips) > 0 {
 			host = ips[0].String()
 		}
 	}
-	control := fmt.Sprintf("https://%s:%d", host, s.cfg.ControlPort)
+	control := "https://" + net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(s.cfg.ControlPort))
 	installerURL := "https://raw.githubusercontent.com/Flyinsky2004/oh-my-acme/main/agent/install.sh"
+	checksumURL := ""
 	versionArg := ""
 	if Version != "" && Version != "dev" {
 		installerURL = fmt.Sprintf("https://github.com/Flyinsky2004/oh-my-acme/releases/download/%s/install-agent.sh", Version)
+		checksumURL = fmt.Sprintf("https://github.com/Flyinsky2004/oh-my-acme/releases/download/%s/checksums.txt", Version)
 		versionArg = " -version " + shellQuote(Version)
 	}
+	// Elevate before creating or downloading the installer. A root-owned 0700
+	// directory prevents an unprivileged local user from replacing a downloaded
+	// script between verification and execution. Release checksums detect
+	// corruption; they are not signatures independent of the release account.
+	bootstrap := `set -eu
+umask 077
+tmp=$(mktemp -d /tmp/oh-my-acme-agent.XXXXXXXX)
+trap 'rm -rf -- "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+curl --proto '=https' --proto-redir '=https' -fsSL -o "$tmp/install.sh" "$1"
+if [ -n "$2" ]; then
+  curl --proto '=https' --proto-redir '=https' -fsSL -o "$tmp/checksums.txt" "$2"
+  expected=$(awk '$2 == "install-agent.sh" {print $1}' "$tmp/checksums.txt")
+  actual=$(sha256sum "$tmp/install.sh")
+  actual=${actual%% *}
+  [ "${#expected}" -eq 64 ] && [ "$expected" = "$actual" ] || { echo 'installer checksum mismatch' >&2; exit 1; }
+fi
+shift 2
+bash "$tmp/install.sh" "$@"`
 	return fmt.Sprintf(
-		"curl -fsSL -o /tmp/oh-my-acme-agent-install.sh %s && sudo bash /tmp/oh-my-acme-agent-install.sh -server %s -token %s -ca-fingerprint %s -name %s -port 9123%s",
-		shellQuote(installerURL), shellQuote(control), shellQuote(token), shellQuote(s.serverLeafFP), shellQuote(name), versionArg,
+		"sudo bash -c %s oh-my-acme-install %s %s -server %s -token %s -ca-fingerprint %s -name %s -port 9123%s",
+		shellQuote(bootstrap), shellQuote(installerURL), shellQuote(checksumURL), shellQuote(control), shellQuote(token), shellQuote(s.serverLeafFP), shellQuote(name), versionArg,
 	)
 }
 
@@ -306,6 +326,7 @@ func (s *Server) ListenAndServeWeb(handler http.Handler) error {
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
 	s.log.Info("web ui listening", "addr", addr)
@@ -327,6 +348,7 @@ func (s *Server) ListenAndServeControl(handler http.Handler) error {
 	s.controlHTTP = &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
 	s.log.Info("control port listening", "addr", addr)

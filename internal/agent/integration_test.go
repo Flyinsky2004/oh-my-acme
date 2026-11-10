@@ -3,15 +3,10 @@ package agent
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
-	"math/big"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,16 +14,26 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Flyinsky2004/oh-my-acme/internal/pki"
 	"github.com/Flyinsky2004/oh-my-acme/internal/protocol"
 )
 
+// disableNginx makes the agent deterministic in tests: it never resolves or
+// executes a real nginx/systemctl, even on a Linux CI host that has them.
+func disableNginx(a *Agent) {
+	a.nginxInstalled = false
+	a.nginxPath = ""
+	a.systemctlPath = ""
+	a.runFn = func(context.Context, string, []string) ([]byte, error) {
+		return nil, errors.New("unexpected command execution")
+	}
+}
+
 // TestDeployOverMTLS starts a real Agent over mTLS and pushes a certificate
 // from the perspective of the server (which presents a client cert signed by
-// the shared internal CA). It exercises the full deploy handler including SAN
-// /key verification and file installation.
+// the shared internal CA). It exercises the full deploy handler including
+// chain/key verification and file installation.
 func TestDeployOverMTLS(t *testing.T) {
 	dir := t.TempDir()
 	ca, err := pki.NewCA("test-ca")
@@ -72,6 +77,7 @@ func TestDeployOverMTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	disableNginx(a)
 	tlsCfg, err := a.TLSConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -94,12 +100,10 @@ func TestDeployOverMTLS(t *testing.T) {
 		}},
 	}
 
-	leaf, priv := selfSignedLeaf(t, "")
-	req := protocol.DeployRequest{
-		CertificateID: "cert1", RootDomain: "example.com", VersionID: "ver1",
-		CertPEM: leaf, PrivateKeyPEM: priv,
-		CAPEM: leaf, FullchainPEM: leaf,
-	}
+	chain := newTestChain(t, leafSpec{})
+	req := chain.request("example.com")
+	req.CertificateID = "cert1"
+	req.VersionID = "ver1"
 	body, _ := json.Marshal(req)
 	hreq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+protocol.AgentAPIPrefix+"/deploy", bytes.NewReader(body))
 	hreq.Header.Set("Content-Type", "application/json")
@@ -119,7 +123,7 @@ func TestDeployOverMTLS(t *testing.T) {
 		t.Fatal("expected deploy log")
 	}
 	// The files should have been written with the correct permissions.
-	for _, n := range []string{"cert.pem", "fullchain.pem", "privkey.pem"} {
+	for _, n := range []string{"cert.pem", "ca.pem", "fullchain.pem", "privkey.pem"} {
 		if _, err := os.Stat(filepath.Join(certDir, "example.com", n)); err != nil {
 			t.Fatalf("expected %s: %v", n, err)
 		}
@@ -144,33 +148,6 @@ func poolOf(cert *x509.Certificate) *x509.CertPool {
 	return p
 }
 
-// selfSignedLeaf makes a (self-signed) leaf cert+key covering example.com and
-// *.example.com for the deploy test. The agent checks SAN/validity/key, not
-// the chain, so a self-signed leaf is fine.
-func selfSignedLeaf(t *testing.T, key string) (certPEM, privPEM string) {
-	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "example.com"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		DNSNames:     []string{"example.com", "*.example.com"},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kder, _ := x509.MarshalECPrivateKey(priv)
-	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-	privPEM = string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}))
-	return certPEM, privPEM
-}
-
 func TestHandleDeployIgnoresCancelledRequestContext(t *testing.T) {
 	dir := t.TempDir()
 	a, err := New(Config{
@@ -182,19 +159,21 @@ func TestHandleDeployIgnoresCancelledRequestContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	leaf, priv := selfSignedLeaf(t, "")
-	body, err := json.Marshal(protocol.DeployRequest{
-		CertificateID: "cert1", RootDomain: "example.com", VersionID: "ver1",
-		CertPEM: leaf, PrivateKeyPEM: priv, CAPEM: leaf, FullchainPEM: leaf,
-	})
+	disableNginx(a)
+
+	chain := newTestChain(t, leafSpec{})
+	req := chain.request("example.com")
+	req.CertificateID = "cert1"
+	req.VersionID = "ver1"
+	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	req := httptest.NewRequest(http.MethodPost, protocol.AgentAPIPrefix+"/deploy", bytes.NewReader(body)).WithContext(ctx)
+	httpReq := httptest.NewRequest(http.MethodPost, protocol.AgentAPIPrefix+"/deploy", bytes.NewReader(body)).WithContext(ctx)
 	rw := httptest.NewRecorder()
-	a.handleDeploy(rw, req)
+	a.handleDeploy(rw, httpReq)
 	if rw.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 body=%s", rw.Code, rw.Body.String())
 	}

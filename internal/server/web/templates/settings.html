@@ -57,6 +57,7 @@
       <p class="muted">更新完成后 Server 会由 systemd 自动重启，请稍后刷新页面。</p>
     {{else if .ServerVersions}}
       <form class="compact-form" method="post" action="/settings/update" data-confirm-action="更新 Server" data-confirm-target="Server" data-confirm-notice="更新完成后 Server 将自动重启。">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
         <div class="field">
           <label class="field-label" for="server-version">目标版本</label>
           <select id="server-version" name="version">
@@ -99,7 +100,7 @@
               {{if .Default}}
                 <span class="badge success">默认</span>
               {{else}}
-                <form class="inline" method="post" action="/settings/ca/{{.ID}}/default"><button class="button-secondary" type="submit">{{template "icon-default"}}设为默认</button></form>
+                <form class="inline" method="post" action="/settings/ca/{{.ID}}/default"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="button-secondary" type="submit">{{template "icon-default"}}设为默认</button></form>
               {{end}}
             </td>
           </tr>
@@ -108,6 +109,7 @@
       </table>
     </div>
     <form class="ca-add-form" method="post" action="/settings/ca">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
       <div class="field">
         <label class="field-label" for="ca-name">名称</label>
         <input id="ca-name" name="name" required>
@@ -128,6 +130,7 @@
       </div>
     </div>
     <form class="section-stack" method="post" action="/settings">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
       <div class="field-grid">
         <div class="field">
           <label class="field-label" for="acme-email">ACME 账户邮箱</label>
@@ -171,6 +174,18 @@
           <span class="hint" id="tg-chat-id-hint">0 表示尚未授权。请私聊机器人并发送 /start，机器人会回复用户 ID；群组 Chat ID 不受支持。</span>
         </div>
         <label class="checkbox-field field-full" for="tg-clear-token"><input id="tg-clear-token" type="checkbox" name="tg_clear_token"><span>关闭机器人并清除本机保存的 Bot Token</span></label>
+        <div class="field field-full">
+          <label class="field-label" for="settings-password">当前密码</label>
+          <input id="settings-password" name="password" type="password" autocomplete="current-password" aria-describedby="reauth-hint">
+          <span class="hint" id="reauth-hint">仅修改 Telegram Bot Token、授权用户 ID 或启停状态时需要验证当前密码。</span>
+        </div>
+        {{if .TwoFactorEnabled}}
+        <div class="field field-full">
+          <label class="field-label" for="settings-otp">两步验证码或恢复码</label>
+          <input id="settings-otp" name="otp" autocomplete="one-time-code" autocapitalize="off" spellcheck="false" aria-describedby="reauth-otp-hint">
+          <span class="hint" id="reauth-otp-hint">两步验证已启用，修改 Telegram 配置时还需要一个未使用的验证码或恢复码。</span>
+        </div>
+        {{end}}
       </div>
       <div class="form-actions"><button type="submit">{{template "icon-save"}}保存</button></div>
     </form>

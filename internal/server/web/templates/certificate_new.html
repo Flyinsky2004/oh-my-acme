@@ -11,6 +11,7 @@
 {{else}}
 <form class="glass-panel section-stack" method="post" action="/certificates">
 {{end}}
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
   <div class="field-grid">
     <div class="field field-full">
       <label class="field-label" for="root-domain">根域名</label>

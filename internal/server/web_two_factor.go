@@ -16,10 +16,13 @@ import (
 	"github.com/pquerna/otp/totp"
 )
 
-// All authentication and 2FA mutations are serialized by Web.authMu, including
-// session issuance/revocation. Rate limiting is account-wide, not proxy-IP based.
-func (w *Web) allowAuthAttempt(rw http.ResponseWriter) bool {
-	now := time.Now()
+// allowSensitiveAttempt is the account-wide quota for second-factor and other
+// sensitive mutations. Callers hold authMu and must only reach it after the
+// current password has already been verified, so anonymous wrong-password
+// traffic cannot exhaust the administrator's quota. Per-source limiting is
+// handled separately by allowSourceAttempt.
+func (w *Web) allowSensitiveAttempt(rw http.ResponseWriter) bool {
+	now := w.nowTime()
 	if now.Sub(w.authWindow) >= time.Minute {
 		w.authWindow, w.authAttempts = now, 0
 	}
@@ -70,8 +73,9 @@ func newRecoveryCodes() ([]string, []string, error) {
 	return codes, hashes, nil
 }
 
-// Store.WithState does not roll back failed disk writes. Restore this field on
-// failure so a failed activation cannot enable 2FA without showing recovery codes.
+// saveTwoFactor persists the 2FA state. Store.WithState restores the in-memory
+// state when the disk write fails, so a failed activation cannot enable 2FA
+// without showing recovery codes and a failed consumption cannot burn a code.
 func (w *Web) saveTwoFactor(next domain.AdminTwoFactor) error {
 	if next.Enabled {
 		if w.srv.twoFactorCipher == nil {
@@ -90,14 +94,12 @@ func (w *Web) saveTwoFactor(next domain.AdminTwoFactor) error {
 	} else {
 		next.Secret, next.EncryptedSecret = "", ""
 	}
-	previous := w.srv.getAdmin().TwoFactor
-	err := w.srv.st.WithState(true, func(st *domain.State) error { st.Admin.TwoFactor = next; return nil })
-	if err != nil {
-		_ = w.srv.st.WithState(false, func(st *domain.State) error { st.Admin.TwoFactor = previous; return nil })
-	}
-	return err
+	return w.srv.st.Update(func(st *domain.State) error { st.Admin.TwoFactor = next; return nil })
 }
 
+// consumeSecondFactor verifies and consumes a TOTP step or recovery code. The
+// caller must hold Web.authMu: the read-check-write sequence is what makes a
+// code one-time under concurrent logins.
 func (w *Web) consumeSecondFactor(code string) (bool, error) {
 	factor := w.srv.getAdmin().TwoFactor
 	if !factor.Enabled {
@@ -107,7 +109,7 @@ func (w *Web) consumeSecondFactor(code string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if step, ok := matchingTOTPStep(secret, code, time.Now(), factor.LastStep); ok {
+	if step, ok := matchingTOTPStep(secret, code, w.nowTime(), factor.LastStep); ok {
 		factor.LastStep = step
 	} else {
 		hash := recoveryHash(code)
@@ -128,17 +130,13 @@ func (w *Web) consumeSecondFactor(code string) (bool, error) {
 	return true, nil
 }
 
-// securityForm checks a session-bound CSRF token as well as the current session;
-// handlers repeat the session check after obtaining authMu to cover revocation.
+// securityForm re-validates the session and session-bound CSRF token after
+// authMu is taken, covering a concurrent logout/rotation. The body has already
+// been parsed by the auth middleware or prepareBody, so this never reads from
+// the client while holding the lock.
 func (w *Web) securityForm(rw http.ResponseWriter, r *http.Request) (session, bool) {
-	r.Body = http.MaxBytesReader(rw, r.Body, 4096)
-	if err := r.ParseForm(); err != nil {
-		http.Error(rw, "请求无效", http.StatusBadRequest)
-		return session{}, false
-	}
 	sess, ok := w.sessions.get(requestSession(r))
-	token := r.PostForm.Get("csrf")
-	if !ok || token == "" || subtle.ConstantTimeCompare([]byte(sess.csrf), []byte(token)) != 1 {
+	if !ok || !validCSRF(r, sess) {
 		http.Error(rw, "页面已过期，请刷新后重试", http.StatusForbidden)
 		return session{}, false
 	}
@@ -153,7 +151,7 @@ func (w *Web) twoFactorPage(rw http.ResponseWriter, r *http.Request, message str
 	}
 	factor := w.srv.getAdmin().TwoFactor
 	secret := ""
-	if !factor.Enabled && time.Now().Before(sess.pendingUntil) {
+	if !factor.Enabled && w.nowTime().Before(sess.pendingUntil) {
 		secret = sess.pendingSecret
 	}
 	w.page(rw, r, "两步验证", "/settings", "two-factor", map[string]any{
@@ -163,16 +161,14 @@ func (w *Web) twoFactorPage(rw http.ResponseWriter, r *http.Request, message str
 }
 
 func (w *Web) handleTwoFactorPage(rw http.ResponseWriter, r *http.Request) {
-	w.authMu.Lock()
-	defer w.authMu.Unlock()
 	w.twoFactorPage(rw, r, "", nil)
 }
 
 func (w *Web) handleTwoFactorStart(rw http.ResponseWriter, r *http.Request) {
-	w.authMu.Lock()
-	defer w.authMu.Unlock()
-	sess, ok := w.securityForm(rw, r)
-	if !ok || !w.allowAuthAttempt(rw) {
+	if !w.prepareBody(rw, r, maxTwoFactorBody) {
+		return
+	}
+	if !w.allowSourceAttempt(rw, r) {
 		return
 	}
 	if w.srv.twoFactorCipher == nil {
@@ -184,7 +180,12 @@ func (w *Web) handleTwoFactorStart(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "两步验证已启用", http.StatusConflict)
 		return
 	}
-	if !verifyPassword(r.PostForm.Get("password"), admin.PasswordHash) {
+	// Password verification is outside authMu and bounded by the work gate.
+	passwordOK, ok := w.verifyPasswordGated(rw, r.PostForm.Get("password"), admin.PasswordHash)
+	if !ok {
+		return
+	}
+	if !passwordOK {
 		w.twoFactorPage(rw, r, "当前密码错误", nil)
 		return
 	}
@@ -193,15 +194,24 @@ func (w *Web) handleTwoFactorStart(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "无法生成绑定密钥", 500)
 		return
 	}
+	w.authMu.Lock()
+	defer w.authMu.Unlock()
+	sess, ok := w.securityForm(rw, r)
+	if !ok || !w.allowSensitiveAttempt(rw) {
+		return
+	}
+	current := w.srv.getAdmin()
+	if current.TwoFactor.Enabled || current.PasswordHash != admin.PasswordHash {
+		http.Error(rw, "账户状态已变化，请重试", http.StatusConflict)
+		return
+	}
 	w.sessions.setPending(sess.id, key.Secret())
 	w.redirect(rw, r, "/settings/2fa")
 }
 
 func (w *Web) handleTwoFactorQR(rw http.ResponseWriter, r *http.Request) {
-	w.authMu.Lock()
-	defer w.authMu.Unlock()
 	sess, ok := w.sessions.get(requestSession(r))
-	if !ok || w.srv.getAdmin().TwoFactor.Enabled || sess.pendingSecret == "" || !time.Now().Before(sess.pendingUntil) {
+	if !ok || w.srv.getAdmin().TwoFactor.Enabled || sess.pendingSecret == "" || !w.nowTime().Before(sess.pendingUntil) {
 		http.Error(rw, "绑定已过期，请重新开始", http.StatusNotFound)
 		return
 	}
@@ -219,29 +229,37 @@ func (w *Web) handleTwoFactorQR(rw http.ResponseWriter, r *http.Request) {
 	_ = png.Encode(rw, img)
 }
 
-func (w *Web) rotateAdminSession(rw http.ResponseWriter, r *http.Request) string {
-	w.sessions.revokeAll()
-	id := w.sessions.create(w.srv.getAdmin().Username)
-	w.sessionCookieAndSet(rw, r, id)
-	return id
+// rotateAdminSession revokes every session and installs one replacement. The
+// store rotates atomically and returns the new CSRF token so the response can
+// render forms that match the rotated cookie.
+func (w *Web) rotateAdminSession(rw http.ResponseWriter, r *http.Request) session {
+	sess := w.sessions.rotate(w.srv.getAdmin().Username)
+	w.sessionCookieAndSet(rw, r, sess.id)
+	return sess
 }
 
 func (w *Web) handleTwoFactorEnable(rw http.ResponseWriter, r *http.Request) {
+	if !w.prepareBody(rw, r, maxTwoFactorBody) {
+		return
+	}
+	if !w.allowSourceAttempt(rw, r) {
+		return
+	}
 	w.authMu.Lock()
 	defer w.authMu.Unlock()
 	sess, ok := w.securityForm(rw, r)
-	if !ok || !w.allowAuthAttempt(rw) {
+	if !ok || !w.allowSensitiveAttempt(rw) {
 		return
 	}
 	if w.srv.getAdmin().TwoFactor.Enabled {
 		http.Error(rw, "两步验证已启用", http.StatusConflict)
 		return
 	}
-	if sess.pendingSecret == "" || !time.Now().Before(sess.pendingUntil) {
+	if sess.pendingSecret == "" || !w.nowTime().Before(sess.pendingUntil) {
 		w.twoFactorPage(rw, r, "绑定已过期，请重新开始", nil)
 		return
 	}
-	step, valid := matchingTOTPStep(sess.pendingSecret, r.PostForm.Get("otp"), time.Now(), 0)
+	step, valid := matchingTOTPStep(sess.pendingSecret, r.PostForm.Get("otp"), w.nowTime(), 0)
 	if !valid {
 		w.twoFactorPage(rw, r, "验证码错误，请检查手机时间后重试", nil)
 		return
@@ -254,19 +272,18 @@ func (w *Web) handleTwoFactorEnable(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "无法保存两步验证设置，请稍后重试", 500)
 		return
 	}
-	id := w.rotateAdminSession(rw, r)
+	rotated := w.rotateAdminSession(rw, r)
 	// Render with the replacement session; recovery plaintext exists only for this response.
-	sess, _ = w.sessions.get(id)
 	w.page(rw, r, "保存恢复码", "/settings", "two-factor", map[string]any{
-		"Enabled": true, "CSRF": sess.csrf, "RecoveryCodes": codes, "RecoveryRemaining": len(hashes),
+		"Enabled": true, "CSRF": rotated.csrf, "RecoveryCodes": codes, "RecoveryRemaining": len(hashes),
 	})
 }
 
 func (w *Web) handleTwoFactorDisable(rw http.ResponseWriter, r *http.Request) {
-	w.authMu.Lock()
-	defer w.authMu.Unlock()
-	_, ok := w.securityForm(rw, r)
-	if !ok || !w.allowAuthAttempt(rw) {
+	if !w.prepareBody(rw, r, maxTwoFactorBody) {
+		return
+	}
+	if !w.allowSourceAttempt(rw, r) {
 		return
 	}
 	admin := w.srv.getAdmin()
@@ -274,8 +291,23 @@ func (w *Web) handleTwoFactorDisable(rw http.ResponseWriter, r *http.Request) {
 		w.redirect(rw, r, "/settings/2fa")
 		return
 	}
-	if !verifyPassword(r.PostForm.Get("password"), admin.PasswordHash) {
+	// Password verification is outside authMu and bounded by the work gate.
+	passwordOK, ok := w.verifyPasswordGated(rw, r.PostForm.Get("password"), admin.PasswordHash)
+	if !ok {
+		return
+	}
+	if !passwordOK {
 		w.twoFactorPage(rw, r, "密码或验证码错误", nil)
+		return
+	}
+	w.authMu.Lock()
+	defer w.authMu.Unlock()
+	if _, ok := w.securityForm(rw, r); !ok || !w.allowSensitiveAttempt(rw) {
+		return
+	}
+	current := w.srv.getAdmin()
+	if !current.TwoFactor.Enabled || current.PasswordHash != admin.PasswordHash {
+		http.Error(rw, "账户状态已变化，请重试", http.StatusConflict)
 		return
 	}
 	valid, err := w.consumeSecondFactor(r.PostForm.Get("otp"))

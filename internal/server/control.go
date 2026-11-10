@@ -3,14 +3,27 @@ package server
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Flyinsky2004/oh-my-acme/internal/domain"
 	"github.com/Flyinsky2004/oh-my-acme/internal/protocol"
 	"github.com/Flyinsky2004/oh-my-acme/internal/store"
 )
+
+var (
+	errRegisterTokenInvalid = errors.New("invalid or expired registration token")
+	errRegisterTokenBound   = errors.New("token bound to a different agent")
+)
+
+// registerBeforeConsume is a test seam invoked after the CSR is signed and
+// before the token is atomically consumed. It is nil in production; tests use
+// it to hold concurrent registrations at a barrier.
+var registerBeforeConsume func()
 
 // ControlHandler returns the mTLS control-port HTTP handler used by agents to
 // register and obtain their identity certificate.
@@ -23,6 +36,12 @@ func (s *Server) ControlHandler() http.Handler {
 // handleRegister processes an agent's one-time-token registration: it validates
 // the token, derives the source IP from the TLS connection, signs the agent's
 // CSR, persists the agent, marks the token used, and returns the identity.
+//
+// Token validation is repeated inside the store transaction: the pre-check is
+// only a cheap rejection, while the locked re-check is authoritative. A
+// concurrent replay, an expired token, a used token or a binding mismatch can
+// therefore never consume the token twice or overwrite another winner's Agent
+// record. If persistence fails, no certificate is returned.
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Registration is reachable before an Agent has a client certificate, so
 	// bound the unauthenticated JSON/CSR body before token validation.
@@ -32,15 +51,30 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
+	if req.Port < 0 || req.Port > 65535 {
+		writeJSONErr(w, http.StatusBadRequest, "invalid agent port")
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if len(name) > 255 {
+		writeJSONErr(w, http.StatusBadRequest, "agent name is too long")
+		return
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			writeJSONErr(w, http.StatusBadRequest, "agent name contains control characters")
+			return
+		}
+	}
 
 	st := s.st.State()
 	rec, ok := st.Tokens[req.Token]
-	if !ok || !rec.TokenConsumable() {
-		writeJSONErr(w, http.StatusForbidden, "invalid or expired registration token")
+	if !ok || !tokenConsumableAt(rec, time.Now()) {
+		writeJSONErr(w, http.StatusForbidden, errRegisterTokenInvalid.Error())
 		return
 	}
 	if rec.AgentID != "" && req.AgentID != "" && req.AgentID != rec.AgentID {
-		writeJSONErr(w, http.StatusForbidden, "token bound to a different agent")
+		writeJSONErr(w, http.StatusForbidden, errRegisterTokenBound.Error())
 		return
 	}
 
@@ -58,21 +92,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the CSR and sign it with the internal CA (IP SAN = source IP).
-	block, _ := pem.Decode([]byte(req.CSR))
-	if block == nil || block.Type != "CERTIFICATE REQUEST" {
-		writeJSONErr(w, http.StatusBadRequest, "invalid CSR")
+	if _, err := parseAgentCSR(req.CSR); err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
-	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "invalid CSR: "+err.Error())
-		return
-	}
-	if err := csr.CheckSignature(); err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "CSR signature invalid")
-		return
-	}
-
 	kp, err := s.ca.SignAgentCSR([]byte(req.CSR), []net.IP{ip})
 	if err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "sign agent cert: "+err.Error())
@@ -84,33 +107,53 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentID := rec.AgentID
-	if agentID == "" {
-		agentID, err = store.NewID()
-		if err != nil {
-			writeJSONErr(w, http.StatusInternalServerError, "generate id")
-			return
-		}
-	}
-	name := req.Name
-	if name == "" {
-		name = "agent-" + shortID(agentID)
+	if registerBeforeConsume != nil {
+		registerBeforeConsume()
 	}
 
+	var agentID string
 	err = s.st.WithState(true, func(st *domain.State) error {
-		if t, ok := st.Tokens[req.Token]; ok {
-			t.UsedAt = time.Now()
+		now := time.Now()
+		rec, ok := st.Tokens[req.Token]
+		if !ok || !tokenConsumableAt(rec, now) {
+			return errRegisterTokenInvalid
 		}
+		if rec.AgentID != "" && req.AgentID != "" && req.AgentID != rec.AgentID {
+			return errRegisterTokenBound
+		}
+		agentID = rec.AgentID
+		if agentID == "" {
+			id, idErr := store.NewID()
+			if idErr != nil {
+				return idErr
+			}
+			agentID = id
+		}
+		agentName := name
+		if agentName == "" {
+			agentName = strings.TrimSpace(rec.AgentName)
+		}
+		if agentName == "" {
+			agentName = "agent-" + shortID(agentID)
+		}
+		rec.UsedAt = now
 		st.Agents[agentID] = &domain.Agent{
-			ID: agentID, Name: name, Address: srcIP, Port: req.Port,
+			ID: agentID, Name: agentName, Address: srcIP, Port: req.Port,
 			Status: domain.AgentRegistered, Version: req.Version,
 			GOOS: req.GOOS, GOARCH: req.GOARCH,
-			RegisteredAt: time.Now(), CertExpiresAt: agentCert.NotAfter, LastSeenAt: time.Now(),
+			RegisteredAt: now, CertExpiresAt: agentCert.NotAfter, LastSeenAt: now,
 		}
 		return nil
 	})
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "persist agent: "+err.Error())
+		switch {
+		case errors.Is(err, errRegisterTokenInvalid):
+			writeJSONErr(w, http.StatusForbidden, errRegisterTokenInvalid.Error())
+		case errors.Is(err, errRegisterTokenBound):
+			writeJSONErr(w, http.StatusForbidden, errRegisterTokenBound.Error())
+		default:
+			writeJSONErr(w, http.StatusInternalServerError, "persist agent: "+err.Error())
+		}
 		return
 	}
 
@@ -121,7 +164,36 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		ServerCAPEM: string(s.ca.EncodeCA()),
 		ExpiresAt:   agentCert.NotAfter.Format(time.RFC3339),
 	})
-	s.log.Info("agent registered", "agent_id", agentID, "addr", srcIP, "port", req.Port)
+	if s.log != nil {
+		s.log.Info("agent registered", "agent_id", agentID, "addr", srcIP, "port", req.Port)
+	}
+}
+
+// tokenConsumableAt reports whether a token is still unused and unexpired at
+// the given time. The check is repeated under the store lock.
+func tokenConsumableAt(rec *domain.TokenRecord, now time.Time) bool {
+	if rec == nil || !rec.UsedAt.IsZero() {
+		return false
+	}
+	if !rec.ExpiresAt.IsZero() && !now.Before(rec.ExpiresAt) {
+		return false
+	}
+	return true
+}
+
+func parseAgentCSR(raw string) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode([]byte(raw))
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		return nil, errors.New("invalid CSR")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CSR: %w", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, errors.New("CSR signature invalid")
+	}
+	return csr, nil
 }
 
 // CreateAgentToken mints a one-time registration token for an agent with a

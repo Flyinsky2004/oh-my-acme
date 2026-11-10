@@ -58,12 +58,17 @@ func TestHandleSettingsSaveTelegram(t *testing.T) {
 		"dns_sleep":   {"0"},
 		"email":       {"admin@example.com"},
 		"server_host": {"acme.example.com"},
+		"password":    {"test-password"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/settings", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rw := httptest.NewRecorder()
 
-	web := &Web{srv: &Server{st: st}}
+	srv := &Server{st: st}
+	if err := srv.setAdminPassword("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	web := &Web{srv: srv}
 	web.handleSettingsSave(rw, req)
 
 	if rw.Code != http.StatusFound {
@@ -94,11 +99,15 @@ func TestHandleSettingsSaveClearsTelegramToken(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	form := url.Values{"tg_clear_token": {"on"}, "tg_chat_id": {"0"}}
+	form := url.Values{"tg_clear_token": {"on"}, "tg_chat_id": {"0"}, "password": {"test-password"}}
 	req := httptest.NewRequest(http.MethodPost, "/settings", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rw := httptest.NewRecorder()
-	(&Web{srv: &Server{st: st}}).handleSettingsSave(rw, req)
+	srv := &Server{st: st}
+	if err := srv.setAdminPassword("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	(&Web{srv: srv}).handleSettingsSave(rw, req)
 	if rw.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d; body=%s", rw.Code, http.StatusFound, rw.Body.String())
 	}

@@ -586,11 +586,9 @@ func buildDeployRequest(st *store.Store, cert *domain.Certificate) (protocol.Dep
 
 // pushCert sends the deploy request to the agent over mTLS.
 func (s *Server) pushCert(ctx context.Context, agent *domain.Agent, req protocol.DeployRequest) (*protocol.DeployResponse, error) {
-	u := fmt.Sprintf("https://%s:%d%s/deploy", agent.Address, agent.Port, protocol.AgentAPIPrefix)
-	client := &http.Client{
-		Timeout:   s.agentDeployTimeout(),
-		Transport: &http.Transport{TLSClientConfig: s.cliTLSCfg},
-	}
+	u := agentEndpoint(agent.Address, agent.Port, protocol.AgentAPIPrefix+"/deploy")
+	client := s.agentHTTPClient(s.agentDeployTimeout())
+	defer client.CloseIdleConnections()
 	body, err := encodeJSON(req)
 	if err != nil {
 		return nil, err
@@ -606,7 +604,7 @@ func (s *Server) pushCert(ctx context.Context, agent *domain.Agent, req protocol
 	}
 	defer resp.Body.Close()
 	var out protocol.DeployResponse
-	if err := decodeJSON(resp.Body, &out); err != nil {
+	if err := decodeAgentResponse(resp, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -702,7 +700,7 @@ func (s *Server) updateAgent(ctx context.Context, agentID, targetVersion string)
 	if agent == nil {
 		return errNotFound
 	}
-	u := fmt.Sprintf("https://%s:%d%s/update", agent.Address, agent.Port, protocol.AgentAPIPrefix)
+	u := agentEndpoint(agent.Address, agent.Port, protocol.AgentAPIPrefix+"/update")
 	body, err := encodeJSON(protocol.UpdateRequest{Version: targetVersion})
 	if err != nil {
 		return err
@@ -712,14 +710,15 @@ func (s *Server) updateAgent(ctx context.Context, agentID, targetVersion string)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 4 * time.Minute, Transport: &http.Transport{TLSClientConfig: s.cliTLSCfg}}
+	client := s.agentHTTPClient(4 * time.Minute)
+	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send update signal: %w", err)
 	}
 	defer resp.Body.Close()
 	var result protocol.UpdateResponse
-	if err := decodeJSON(resp.Body, &result); err != nil {
+	if err := decodeAgentResponse(resp, &result); err != nil {
 		return err
 	}
 	if !result.Success {
@@ -751,19 +750,20 @@ func (s *Server) RefreshAgent(ctx context.Context, agentID string) error {
 	if agent == nil {
 		return errNotFound
 	}
-	u := fmt.Sprintf("https://%s:%d%s/health", agent.Address, agent.Port, protocol.AgentAPIPrefix)
+	u := agentEndpoint(agent.Address, agent.Port, protocol.AgentAPIPrefix+"/health")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: s.agentDialTimeout(), Transport: &http.Transport{TLSClientConfig: s.cliTLSCfg}}
+	client := s.agentHTTPClient(s.agentDialTimeout())
+	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	var health protocol.HealthResponse
-	if err := decodeJSON(resp.Body, &health); err != nil {
+	if err := decodeAgentResponse(resp, &health); err != nil {
 		return err
 	}
 	if health.AgentID != agentID {

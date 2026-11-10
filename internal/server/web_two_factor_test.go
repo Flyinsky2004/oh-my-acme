@@ -225,16 +225,16 @@ func TestTOTPSkewAndRateLimit(t *testing.T) {
 	}
 	w := loginHistoryWeb(t)
 	for i := 0; i < 10; i++ {
-		if !w.allowAuthAttempt(httptest.NewRecorder()) {
+		if !w.allowSensitiveAttempt(httptest.NewRecorder()) {
 			t.Fatal("limited too early")
 		}
 	}
 	rw := httptest.NewRecorder()
-	if w.allowAuthAttempt(rw) || rw.Code != 429 || rw.Header().Get("Retry-After") == "" {
+	if w.allowSensitiveAttempt(rw) || rw.Code != 429 || rw.Header().Get("Retry-After") == "" {
 		t.Fatal("rate limit missing")
 	}
 	w.authWindow = time.Now().Add(-time.Minute)
-	if !w.allowAuthAttempt(httptest.NewRecorder()) {
+	if !w.allowSensitiveAttempt(httptest.NewRecorder()) {
 		t.Fatal("limiter never resets")
 	}
 }

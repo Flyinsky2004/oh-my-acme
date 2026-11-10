@@ -53,7 +53,13 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 	// First-run registration.
 	if cfg.AgentID == "" || !fileExists(cfg.CertFile) {
 		if err := register(ctx, configPath, cfg); err != nil {
-			return fmt.Errorf("registration failed: %w", err)
+			var cleanup *agent.IdentityCleanupError
+			if !errors.As(err, &cleanup) {
+				return fmt.Errorf("registration failed: %w", err)
+			}
+			// The complete identity and cleared-token config are already live.
+			// Report retained private backups; do not retry the consumed token.
+			log.Warn("registration completed; identity backup cleanup required", "err", cleanup)
 		}
 		cfg, err = agent.LoadConfig(configPath)
 		if err != nil {
@@ -99,7 +105,11 @@ func run(ctx context.Context, configPath string, log *slog.Logger) error {
 	srv := &http.Server{
 		Handler:           a.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       30 * time.Second,
+		// Bound how long a client may take to send the request body. There is
+		// deliberately no WriteTimeout: nginx apply and self-update can take
+		// longer than any fixed write deadline.
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 30 * time.Second,
 	}
 
 	// Run until SIGINT/SIGTERM.
@@ -144,22 +154,23 @@ func register(ctx context.Context, configPath string, cfg agent.Config) error {
 	if err != nil {
 		return err
 	}
-	reg, err := agent.Register(ctx, cfg.ServerURL, cfg.Token, cfg.AgentID, name, cfg.Port, csrPEM, cfg.CAFingerprint)
+	reg, err := agent.RegisterWithKey(ctx, cfg.ServerURL, cfg.Token, cfg.AgentID, name, cfg.Port, csrPEM, keyPEM, cfg.CAFingerprint)
 	if err != nil {
 		return err
 	}
-	cfg.AgentID = reg.AgentID
-	cfg.Name = name
-	cfg.Token = "" // one-time; clear it
 	serverCIDR, err := agent.ExactServerCIDR(reg.ServerIP)
 	if err != nil {
 		return err
 	}
-	cfg.AllowedServerCIDRs = []string{serverCIDR}
-	if err := agent.SaveIdentity(cfg, reg, keyPEM); err != nil {
-		return err
-	}
-	return agent.SaveConfig(configPath, cfg)
+	next := cfg
+	next.AgentID = reg.AgentID
+	next.Name = name
+	next.Token = "" // one-time; clear it only if the whole transaction commits
+	next.AllowedServerCIDRs = []string{serverCIDR}
+	// Identity files and config.json are one transaction: if config.json
+	// cannot be written, new identity files are rolled back and the old
+	// config (including the token) remains usable for a retry.
+	return agent.SaveIdentityAndConfig(cfg, reg, keyPEM, configPath, next)
 }
 
 func hostname() string {

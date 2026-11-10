@@ -217,4 +217,18 @@
       showRequestError(event, "网络连接失败，请稍后重试");
     });
   });
+
+  // Every state-changing HTMX request carries the session-bound CSRF token
+  // from the page meta tag. It travels in a header, never in the URL.
+  document.addEventListener("htmx:configRequest", (event) => {
+    const detail = event.detail || {};
+    const verb = typeof detail.verb === "string" ? detail.verb.toUpperCase() : "GET";
+    if (verb === "GET" || !detail.headers) {
+      return;
+    }
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta && meta.content) {
+      detail.headers["X-CSRF-Token"] = meta.content;
+    }
+  });
 })();

@@ -4,10 +4,10 @@
 #
 # Downloads the oh-my-acme-agent binary from a GitHub Release, verifies its
 # SHA-256 checksum, installs it under /opt/oh-my-acme-agent, writes config.json
-# (server URL, one-time token, pinned CA fingerprint) and a hardened systemd
+# (server URL, one-time token, pinned TLS leaf fingerprint) and a hardened systemd
 # unit, then enables and starts the service. On first start the agent generates
 # a private key + CSR and registers with the server control port over a pinned
-# CA fingerprint. The connected Server IP is recorded as an inbound API
+# leaf fingerprint. The connected Server IP is recorded as an inbound API
 # allowlist, and the one-time token is then cleared from config.json.
 #
 # Usage:
@@ -15,6 +15,38 @@
 #   sudo ./install.sh -port 9123
 #
 set -euo pipefail
+umask 077
+
+# JSON string encoding without an optional Python/jq dependency. Iterate bytes
+# so UTF-8 survives unchanged while every JSON control byte is escaped.
+json_quote() {
+  local LC_ALL=C value="$1" char i
+  printf '"'
+  for ((i=0; i<${#value}; i++)); do
+    char="${value:i:1}"
+    case "$char" in
+      '"') printf '\\"' ;;
+      '\') printf '\\\\' ;;
+      [[:cntrl:]]) printf '\\u%04x' "'$char" ;;
+      *) printf '%s' "$char" ;;
+    esac
+  done
+  printf '"'
+}
+
+# systemd accepts C-style quoted strings; percent specifiers must be escaped.
+unit_quote() {
+  local value="${1//%/%%}"
+  json_quote "$value"
+}
+
+set_install_dir() {
+  case "$1" in
+    ''|*/) echo "-config must name a file" >&2; exit 1 ;;
+    */*) INSTALL_DIR="${1%/*}"; [ -n "$INSTALL_DIR" ] || INSTALL_DIR=/ ;;
+    *) INSTALL_DIR=. ;;
+  esac
+}
 
 REPO="Flyinsky2004/oh-my-acme"
 VERSION="latest"
@@ -34,12 +66,14 @@ while [ $# -gt 0 ]; do
     -token|--token)        TOKEN="$2"; shift 2 ;;
     -ca-fingerprint|--ca-fingerprint) CA_FINGERPRINT="$2"; shift 2 ;;
     -name|--name)          NAME="$2"; shift 2 ;;
-    -config|--config)      INSTALL_DIR="$(dirname "$2")"; shift 2 ;;
+    -config|--config)      set_install_dir "$2"; shift 2 ;;
     -h|--help)
       echo "usage: $0 [-version vX.Y.Z] [-repo OWNER/REPO] [-port N] -server URL -token T -ca-fingerprint FP"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+[[ "$PORT" =~ ^[0-9]{1,5}$ ]] && ((10#$PORT >= 1 && 10#$PORT <= 65535)) || { echo "invalid port" >&2; exit 1; }
 
 if [ "$(id -u)" -ne 0 ]; then echo "must run as root" >&2; exit 1; fi
 [ "$(uname -s)" = "Linux" ] || { echo "only Linux is supported" >&2; exit 1; }
@@ -67,17 +101,18 @@ fi
 DOWNLOAD_URL="${RELEASE_BASE}/oh-my-acme-agent_linux_${GOARCH}.tar.gz"
 CHECKSUM_URL="${RELEASE_BASE}/checksums.txt"
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d /tmp/oh-my-acme-agent.XXXXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
+trap 'exit 1' HUP INT TERM
 
 CURL="$(command -v curl || true)"
 WGET="$(command -v wget || true)"
 if [ -n "$CURL" ]; then
-  curl -fsSL -o "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || { echo "download failed" >&2; exit 1; }
-  curl -fsSL -o "$TMP/checksums.txt" "$CHECKSUM_URL"   || { echo "checksums download failed" >&2; exit 1; }
+  curl --proto '=https' --proto-redir '=https' -fsSL -o "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || { echo "download failed" >&2; exit 1; }
+  curl --proto '=https' --proto-redir '=https' -fsSL -o "$TMP/checksums.txt" "$CHECKSUM_URL"   || { echo "checksums download failed" >&2; exit 1; }
 elif [ -n "$WGET" ]; then
-  wget -q -O "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || exit 1
-  wget -q -O "$TMP/checksums.txt" "$CHECKSUM_URL"   || exit 1
+  wget --https-only -q -O "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || exit 1
+  wget --https-only -q -O "$TMP/checksums.txt" "$CHECKSUM_URL"   || exit 1
 else
   echo "neither curl nor wget is installed" >&2; exit 1
 fi
@@ -99,13 +134,13 @@ if [ ! -f "${INSTALL_DIR}/config.json" ]; then
 {
   "listen": "0.0.0.0",
   "port": ${PORT},
-  "cert_dir": "${INSTALL_DIR}/certs",
-  "log_dir": "${INSTALL_DIR}/logs",
-  "server_url": "${SERVER_URL}",
+  "cert_dir": $(json_quote "${INSTALL_DIR}/certs"),
+  "log_dir": $(json_quote "${INSTALL_DIR}/logs"),
+  "server_url": $(json_quote "$SERVER_URL"),
   "allowed_server_cidrs": [],
-  "name": "${NAME}",
-  "token": "${TOKEN}",
-  "ca_fingerprint": "${CA_FINGERPRINT}"
+  "name": $(json_quote "$NAME"),
+  "token": $(json_quote "$TOKEN"),
+  "ca_fingerprint": $(json_quote "$CA_FINGERPRINT")
 }
 JSON
   chmod 600 "${INSTALL_DIR}/config.json"
@@ -125,7 +160,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=${BIN_TARGET} -config ${INSTALL_DIR}/config.json
+ExecStart=:$(unit_quote "$BIN_TARGET") -config $(unit_quote "${INSTALL_DIR}/config.json")
 Restart=on-failure
 RestartSec=3
 User=root
@@ -133,7 +168,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=${INSTALL_DIR}
+ReadWritePaths=$(unit_quote "$INSTALL_DIR")
 LimitNOFILE=65536
 
 [Install]

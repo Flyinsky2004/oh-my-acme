@@ -105,6 +105,22 @@ test("an empty deployment selection never asks for confirmation or sends a reque
   assert.equal(error.hidden, false);
 });
 
+test("state-changing htmx requests carry the CSRF token from the page meta", () => {
+  const { document } = loadBeforePageContent(true);
+  document.querySelector = (selector) => selector === 'meta[name="csrf-token"]' ? { content: "token-123" } : null;
+  const event = new CustomEvent("htmx:configRequest", { detail: { verb: "POST", headers: {} } });
+  document.dispatchEvent(event);
+  assert.equal(event.detail.headers["X-CSRF-Token"], "token-123");
+});
+
+test("GET htmx requests do not send the CSRF token", () => {
+  const { document } = loadBeforePageContent(true);
+  document.querySelector = () => ({ content: "token-123" });
+  const event = new CustomEvent("htmx:configRequest", { detail: { verb: "GET", headers: {} } });
+  document.dispatchEvent(event);
+  assert.equal(event.detail.headers["X-CSRF-Token"], undefined);
+});
+
 test("update cancellation blocks a regular form and identifies its target version", () => {
   const { document, questions } = loadBeforePageContent();
   const form = {

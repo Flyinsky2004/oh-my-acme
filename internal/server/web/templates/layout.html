@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="csrf-token" content="{{.CSRF}}">
 <title>{{.Title}} · oh-my-acme</title>
 <link rel="stylesheet" href="{{assetURL "app.css"}}">
 <script src="{{assetURL "htmx.min.js"}}" defer></script>
@@ -28,6 +29,7 @@
     </nav>
     <div class="sidebar-footer">
       <form method="post" action="/logout" class="logout-form">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
         <button class="logout-button" type="submit" aria-label="退出登录">{{template "icon-logout"}}<span class="logout-label">退出登录</span></button>
       </form>
     </div>

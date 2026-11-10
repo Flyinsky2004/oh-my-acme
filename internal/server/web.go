@@ -5,9 +5,7 @@ import (
 	"errors"
 	"html/template"
 	"io/fs"
-	"net"
 	"net/http"
-	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,13 +19,17 @@ import (
 // Web is the HTTP handler for the Web UI. It renders Go templates with HTMX
 // for interactivity and enforces a single-admin login.
 type Web struct {
-	srv          *Server
-	tmpl         *template.Template
-	sessions     *sessionStore
-	cookie       string
-	authMu       sync.Mutex
-	authWindow   time.Time
-	authAttempts int
+	srv             *Server
+	tmpl            *template.Template
+	sessions        *sessionStore
+	sourceLimiter   *sourceLimiter
+	passwordGate    *workGate
+	now             func() time.Time
+	cookie          string
+	authReadTimeout time.Duration
+	authMu          sync.Mutex
+	authWindow      time.Time
+	authAttempts    int
 }
 
 // NewWeb builds the Web handler, parsing the embedded templates.
@@ -41,7 +43,27 @@ func NewWeb(s *Server) (*Web, error) {
 			return nil, err
 		}
 	}
-	return &Web{srv: s, tmpl: tmpl, sessions: newSessionStore(), cookie: "omc_session"}, nil
+	w := &Web{
+		srv:             s,
+		tmpl:            tmpl,
+		sessions:        newSessionStore(),
+		sourceLimiter:   newSourceLimiter(defaultSourceLimit, defaultSourceWindow, defaultSourceMaxEntries),
+		passwordGate:    newWorkGate(defaultPasswordWorkSlots),
+		now:             time.Now,
+		cookie:          "omc_session",
+		authReadTimeout: defaultAuthReadTimeout,
+	}
+	w.sessions.now = w.nowTime
+	return w, nil
+}
+
+// nowTime is the single clock used by rate limiting, TOTP matching and session
+// expiry. Tests replace w.now to advance time deterministically.
+func (w *Web) nowTime() time.Time {
+	if w != nil && w.now != nil {
+		return w.now()
+	}
+	return time.Now()
 }
 
 // Handler returns the route mux (with auth middleware and static assets).
@@ -57,7 +79,7 @@ func (w *Web) Handler() http.Handler {
 
 	mux.HandleFunc("GET /login", w.handleLoginPage)
 	mux.HandleFunc("POST /login", w.handleLoginPost)
-	mux.HandleFunc("POST /logout", w.handleLogout)
+	mux.Handle("POST /logout", w.auth(w.handleLogout))
 	mux.HandleFunc("POST /setup", w.handleSetup)
 
 	// Protected routes.
@@ -100,7 +122,9 @@ func (w *Web) Handler() http.Handler {
 	return w.secure(mux)
 }
 
-// secure enforces auth except for static/login and sets hardening headers.
+// secure enforces same-origin on state-changing requests and sets hardening
+// headers. It runs before authentication so login and bootstrap POSTs are
+// covered too; requests without Origin/Referer (headless CLI and tests) pass.
 func (w *Web) secure(child http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("X-Content-Type-Options", "nosniff")
@@ -109,18 +133,44 @@ func (w *Web) secure(child http.Handler) http.Handler {
 		if !strings.HasPrefix(r.URL.Path, "/static/") {
 			rw.Header().Set("Cache-Control", "no-store")
 		}
+		if isMutatingMethod(r.Method) && !w.originAllowed(r) {
+			http.Error(rw, "跨站请求被拒绝", http.StatusForbidden)
+			return
+		}
 		child.ServeHTTP(rw, r)
 	})
 }
 
 // --- auth middleware ---
 
+// auth requires a live session and, for every state-changing method, a
+// session-bound CSRF token. The token is read from the POST body or the
+// X-CSRF-Token header; it is never accepted from the URL. The body is parsed
+// here (bounded, with a read deadline) so handlers see a ready PostForm and a
+// missing/wrong token is rejected before any side effect.
 func (w *Web) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		id := requestSession(r)
-		if !w.sessions.valid(id) {
+		if _, ok := w.sessions.get(requestSession(r)); !ok {
 			http.Redirect(rw, r, "/login", http.StatusFound)
 			return
+		}
+		if isMutatingMethod(r.Method) {
+			limit := int64(maxMutationBody)
+			if strings.HasPrefix(r.URL.Path, "/settings/2fa/") {
+				limit = maxTwoFactorBody
+			}
+			if !w.prepareBody(rw, r, limit) {
+				return
+			}
+			// Re-read the session after the (possibly slow) body read. A
+			// logout or 2FA rotation during that read revokes the old session;
+			// validating against a pre-read snapshot would still let the
+			// request write. The current token must match the current session.
+			current, ok := w.sessions.get(requestSession(r))
+			if !ok || !validCSRF(r, current) {
+				http.Error(rw, "页面已过期，请刷新后重试", http.StatusForbidden)
+				return
+			}
 		}
 		next(rw, r)
 	})
@@ -160,8 +210,36 @@ func (w *Web) render(rw http.ResponseWriter, r *http.Request, name string, data 
 }
 
 // page renders a content fragment inside the shared layout shell. The fragment
-// (e.g. "dashboard") is executed into a buffer and inserted as .Content.
+// (e.g. "dashboard") is executed into a buffer and inserted as .Content. The
+// session-bound CSRF token is injected into map/struct data and the layout so
+// both normal forms and the layout logout form carry it.
 func (w *Web) page(rw http.ResponseWriter, r *http.Request, title, path, fragment string, data any) error {
+	csrf := ""
+	switch d := data.(type) {
+	case map[string]any:
+		if existing, ok := d["CSRF"].(string); ok {
+			csrf = existing
+		}
+		if csrf == "" {
+			csrf = w.csrfForRequest(r)
+			d["CSRF"] = csrf
+		}
+	case certificateForm:
+		if d.CSRF == "" {
+			d.CSRF = w.csrfForRequest(r)
+		}
+		data, csrf = d, d.CSRF
+	case *certificateForm:
+		if d != nil {
+			if d.CSRF == "" {
+				d.CSRF = w.csrfForRequest(r)
+			}
+			csrf = d.CSRF
+		}
+	}
+	if csrf == "" {
+		csrf = w.csrfForRequest(r)
+	}
 	var b strings.Builder
 	if err := w.tmpl.ExecuteTemplate(&b, fragment, data); err != nil {
 		w.srv.log.Error("render page fragment failed", "fragment", fragment, "err", err)
@@ -170,7 +248,7 @@ func (w *Web) page(rw http.ResponseWriter, r *http.Request, title, path, fragmen
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := w.tmpl.ExecuteTemplate(rw, "layout", map[string]any{
-		"Title": title, "Path": path, "Content": template.HTML(b.String()),
+		"Title": title, "Path": path, "Content": template.HTML(b.String()), "CSRF": csrf,
 	}); err != nil {
 		w.srv.log.Error("render page layout failed", "fragment", fragment, "err", err)
 		return err
@@ -193,64 +271,143 @@ func (w *Web) handleLoginPage(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) handleLoginPost(rw http.ResponseWriter, r *http.Request) {
-	w.authMu.Lock()
-	defer w.authMu.Unlock()
-	if !w.allowAuthAttempt(rw) {
+	// The body is bounded and parsed before authMu: a slow or oversized client
+	// must never hold the lock that serializes OTP consumption and sessions.
+	if !w.prepareBody(rw, r, maxLoginBody) {
 		return
 	}
-	r.Body = http.MaxBytesReader(rw, r.Body, 16*1024)
-	if err := r.ParseForm(); err != nil {
-		http.Error(rw, "登录请求无效或过大", http.StatusBadRequest)
+	// Source limiting runs first and is the only quota a wrong password
+	// consumes. Anonymous password guessing therefore cannot exhaust the
+	// administrator's account-wide second-factor budget.
+	if !w.allowSourceAttempt(rw, r) {
 		return
 	}
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-	admin := w.srv.getAdmin()
+	username := r.PostForm.Get("username")
+	password := r.PostForm.Get("password")
+	otp := r.PostForm.Get("otp")
 
-	initialised := admin.SetupTokenUsed
-	if !initialised {
+	// Capture the revocation epoch before reading the account and verifying
+	// the password. If a 2FA enable/disable rotates sessions while we are
+	// verifying, this login must not resurrect a session afterwards.
+	generation := w.sessions.currentGeneration()
+
+	admin := w.srv.getAdmin()
+	if !admin.SetupTokenUsed {
 		w.redirect(rw, r, "/login")
 		return
 	}
-	success := admin.Username == username && verifyPassword(password, admin.PasswordHash)
-	if success && admin.TwoFactor.Enabled {
+
+	// Password verification is deliberately outside authMu, but it runs under a
+	// small global work gate so concurrent Argon2 calls cannot exhaust memory.
+	passwordOK, ok := w.verifyPasswordGated(rw, password, admin.PasswordHash)
+	if !ok {
+		return
+	}
+	if admin.Username != username || !passwordOK {
+		if err := w.recordAdminLogin(r, username, false); err != nil {
+			w.srv.log.Error("persist admin login failed", "err", err)
+			http.Error(rw, "无法保存登录记录，请稍后重试", http.StatusInternalServerError)
+			return
+		}
+		w.renderLoginFailure(rw, r, admin)
+		return
+	}
+
+	id, ok := w.commitLogin(rw, r, username, admin, generation, otp)
+	if !ok {
+		return
+	}
+	w.sessionCookieAndSet(rw, r, id)
+	w.redirect(rw, r, "/")
+}
+
+// commitLogin is the single critical section that re-checks the account and
+// revocation epoch, consumes the second factor, persists the login record and
+// creates the session. The request body is already parsed, so nothing here
+// reads from the client. It returns ok=false when it has already written a
+// response (failure, rate limit or a revocation that raced the login).
+func (w *Web) commitLogin(rw http.ResponseWriter, r *http.Request, username string, admin domain.AdminAccount, generation uint64, otp string) (string, bool) {
+	w.authMu.Lock()
+	current := w.srv.getAdmin()
+	if current.PasswordHash != admin.PasswordHash ||
+		current.TwoFactor.Enabled != admin.TwoFactor.Enabled ||
+		w.sessions.currentGeneration() != generation {
+		w.authMu.Unlock()
+		if err := w.recordAdminLogin(r, username, false); err != nil {
+			w.srv.log.Error("persist admin login failed", "err", err)
+			http.Error(rw, "无法保存登录记录，请稍后重试", http.StatusInternalServerError)
+			return "", false
+		}
+		w.renderLoginFailure(rw, r, current)
+		return "", false
+	}
+	success := true
+	if current.TwoFactor.Enabled {
+		// Only a correct password reaches the account-wide quota; it bounds
+		// OTP/recovery guessing, not anonymous password attempts.
+		if !w.allowSensitiveAttempt(rw) {
+			w.authMu.Unlock()
+			return "", false
+		}
 		var err error
-		success, err = w.consumeSecondFactor(r.FormValue("otp"))
+		success, err = w.consumeSecondFactor(otp)
 		if err != nil {
+			w.authMu.Unlock()
 			w.srv.log.Error("persist second factor failed", "err", err)
 			http.Error(rw, "验证失败，请稍后重试", http.StatusInternalServerError)
-			return
+			return "", false
 		}
 	}
 	if err := w.recordAdminLogin(r, username, success); err != nil {
+		w.authMu.Unlock()
 		w.srv.log.Error("persist admin login failed", "err", err)
 		http.Error(rw, "无法保存登录记录，请稍后重试", http.StatusInternalServerError)
-		return
+		return "", false
 	}
-	if success {
-		id := w.sessions.create(username)
-		w.sessionCookieAndSet(rw, r, id)
-		w.redirect(rw, r, "/")
-		return
+	if !success {
+		w.authMu.Unlock()
+		w.renderLoginFailure(rw, r, current)
+		return "", false
 	}
+	id := w.sessions.create(username)
+	w.authMu.Unlock()
+	return id, true
+}
+
+func (w *Web) renderLoginFailure(rw http.ResponseWriter, r *http.Request, admin domain.AdminAccount) {
 	message := "用户名或密码错误"
 	if admin.TwoFactor.Enabled {
 		message = "用户名、密码或验证码错误；已使用的验证码不可重复使用"
 	}
-	w.render(rw, r, "login", map[string]any{"Error": message, "TwoFactorEnabled": w.srv.getAdmin().TwoFactor.Enabled})
+	w.render(rw, r, "login", map[string]any{"Error": message, "TwoFactorEnabled": admin.TwoFactor.Enabled})
 }
 
 func (w *Web) handleSetup(rw http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	admin := w.srv.getAdmin()
-	invalid := admin.SetupTokenUsed || admin.SetupToken == "" ||
-		time.Now().After(admin.SetupTokenExpiresAt) ||
-		r.FormValue("setup_token") != admin.SetupToken
-	if invalid {
-		w.render(rw, r, "login", map[string]any{"Error": "初始化令牌无效或已过期，请重启 Server 生成新令牌", "Setup": true})
+	if !w.prepareBody(rw, r, maxSetupBody) {
 		return
 	}
-	if err := w.srv.setAdminPassword(r.FormValue("username"), r.FormValue("password")); err != nil {
+	if !w.allowSourceAttempt(rw, r) {
+		return
+	}
+	username := r.PostForm.Get("username")
+	password := r.PostForm.Get("password")
+	username, err := validateAdminCredentials(username, password)
+	if err != nil {
+		w.render(rw, r, "login", map[string]any{"Error": err.Error(), "Setup": true})
+		return
+	}
+	// The first-admin hash is expensive too; gate it like password checks.
+	release, ok := w.acquirePasswordWork(rw)
+	if !ok {
+		return
+	}
+	hash, err := hashPassword(password)
+	release()
+	if err != nil {
+		http.Error(rw, "无法初始化管理员账户，请稍后重试", http.StatusInternalServerError)
+		return
+	}
+	if err := w.srv.setupAdminWithHash(username, hash, r.PostForm.Get("setup_token")); err != nil {
 		w.render(rw, r, "login", map[string]any{"Error": err.Error(), "Setup": true})
 		return
 	}
@@ -260,7 +417,10 @@ func (w *Web) handleSetup(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) handleLogout(rw http.ResponseWriter, r *http.Request) {
 	id := requestSession(r)
 	w.sessions.delete(id)
-	http.SetCookie(rw, &http.Cookie{Name: w.cookie, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(rw, &http.Cookie{
+		Name: w.cookie, Value: "", Path: "/", MaxAge: -1,
+		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: w.requestHTTPS(r),
+	})
 	w.redirect(rw, r, "/login")
 }
 
@@ -339,9 +499,9 @@ func (w *Web) handleCertificateUpdate(rw http.ResponseWriter, r *http.Request) {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	enabled := r.FormValue("enabled") == "on"
-	err := w.srv.UpdateCertificate(r.PathValue("id"), r.FormValue("root"), r.FormValue("credential_id"),
-		r.FormValue("acme_id"), domain.KeyType(r.FormValue("key_type")), enabled, r.Form["agents"])
+	enabled := r.PostForm.Get("enabled") == "on"
+	err := w.srv.UpdateCertificate(r.PathValue("id"), r.PostForm.Get("root"), r.PostForm.Get("credential_id"),
+		r.PostForm.Get("acme_id"), domain.KeyType(r.PostForm.Get("key_type")), enabled, r.PostForm["agents"])
 	if err != nil {
 		if errors.Is(err, errNotFound) {
 			writeJSONErr(rw, http.StatusNotFound, "certificate not found")
@@ -367,10 +527,10 @@ func (w *Web) handleCertificateDelete(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Web) handleCertificateCreate(rw http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	agents := r.Form["agents"]
+	agents := r.PostForm["agents"]
 	if _, err := w.srv.CreateCertificate(
-		r.FormValue("root"), r.FormValue("credential_id"), r.FormValue("acme_id"),
-		domain.KeyType(r.FormValue("key_type")), agents,
+		r.PostForm.Get("root"), r.PostForm.Get("credential_id"), r.PostForm.Get("acme_id"),
+		domain.KeyType(r.PostForm.Get("key_type")), agents,
 	); err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
@@ -491,6 +651,7 @@ func (w *Web) handleDeployForm(rw http.ResponseWriter, r *http.Request) {
 	}
 	_ = w.render(rw, r, "certificate-deploy-form", map[string]any{
 		"ID": cert.ID, "RootDomain": cert.RootDomain, "Agents": agents,
+		"CSRF": w.csrfForRequest(r),
 	})
 }
 
@@ -588,8 +749,8 @@ func (w *Web) handleCredentialNew(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) handleCredentialCreate(rw http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	if _, err := w.srv.CreateCredential(
-		r.FormValue("name"), r.FormValue("token"), r.FormValue("zone_id"),
-		r.FormValue("account_id"), r.FormValue("remark"),
+		r.PostForm.Get("name"), r.PostForm.Get("token"), r.PostForm.Get("zone_id"),
+		r.PostForm.Get("account_id"), r.PostForm.Get("remark"),
 	); err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
@@ -611,9 +772,9 @@ func (w *Web) handleCredentialEdit(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) handleCredentialUpdate(rw http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	r.ParseForm()
-	enabled := r.FormValue("enabled") == "on"
-	err := w.srv.UpdateCredential(id, r.FormValue("name"), r.FormValue("token"),
-		r.FormValue("zone_id"), r.FormValue("account_id"), r.FormValue("remark"), enabled)
+	enabled := r.PostForm.Get("enabled") == "on"
+	err := w.srv.UpdateCredential(id, r.PostForm.Get("name"), r.PostForm.Get("token"),
+		r.PostForm.Get("zone_id"), r.PostForm.Get("account_id"), r.PostForm.Get("remark"), enabled)
 	if err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
@@ -676,7 +837,7 @@ func (w *Web) handleAgents(rw http.ResponseWriter, r *http.Request) {
 
 func (w *Web) handleAgentToken(rw http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	name := r.FormValue("name")
+	name := r.PostForm.Get("name")
 	token, agentID, err := w.srv.CreateAgentToken(name)
 	if err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
@@ -692,7 +853,7 @@ func (w *Web) handleAgentUpdate(rw http.ResponseWriter, r *http.Request) {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := w.srv.StartAgentUpdate(r.PathValue("id"), r.FormValue("version")); err != nil {
+	if err := w.srv.StartAgentUpdate(r.PathValue("id"), r.PostForm.Get("version")); err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -751,7 +912,7 @@ func (w *Web) handleServerUpdate(rw http.ResponseWriter, r *http.Request) {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := w.srv.StartSelfUpdate(r.FormValue("version")); err != nil {
+	if err := w.srv.StartSelfUpdate(r.PostForm.Get("version")); err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -763,15 +924,15 @@ func (w *Web) handleSettingsSave(rw http.ResponseWriter, r *http.Request) {
 		writeJSONErr(rw, http.StatusBadRequest, "invalid settings form")
 		return
 	}
-	chatID, err := parseTelegramChatID(r.FormValue("tg_chat_id"))
+	chatID, err := parseTelegramChatID(r.PostForm.Get("tg_chat_id"))
 	if err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
 	current := w.srv.st.State().Config
-	tgToken := strings.TrimSpace(r.FormValue("tg_token"))
-	tgEnabled := r.FormValue("tg_enabled") == "on"
-	tgClearToken := r.FormValue("tg_clear_token") == "on"
+	tgToken := strings.TrimSpace(r.PostForm.Get("tg_token"))
+	tgEnabled := r.PostForm.Get("tg_enabled") == "on"
+	tgClearToken := r.PostForm.Get("tg_clear_token") == "on"
 	if tgClearToken && tgEnabled {
 		writeJSONErr(rw, http.StatusBadRequest, "请先关闭 Telegram 机器人再清除 Token")
 		return
@@ -789,11 +950,18 @@ func (w *Web) handleSettingsSave(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renewDays, _ := strconv.Atoi(r.FormValue("renew_days"))
-	dnsSleep, _ := strconv.Atoi(r.FormValue("dns_sleep"))
-	if err := w.srv.st.WithState(true, func(st *domain.State) error {
-		st.Config.ACMEAccountEmail = strings.TrimSpace(r.FormValue("email"))
-		st.Config.ServerHost = strings.TrimSpace(r.FormValue("server_host"))
+	// Changing the bot token or the authorized private-chat user is a
+	// credential change: require the current password and, when enabled, a
+	// one-time 2FA code. Other settings can be saved without re-authentication.
+	if telegramConfigChanged(current, tgToken, tgClearToken, chatID, tgEnabled) && !w.verifyReauthentication(rw, r) {
+		return
+	}
+
+	renewDays, _ := strconv.Atoi(r.PostForm.Get("renew_days"))
+	dnsSleep, _ := strconv.Atoi(r.PostForm.Get("dns_sleep"))
+	if err := w.srv.st.Update(func(st *domain.State) error {
+		st.Config.ACMEAccountEmail = strings.TrimSpace(r.PostForm.Get("email"))
+		st.Config.ServerHost = strings.TrimSpace(r.PostForm.Get("server_host"))
 		if renewDays > 0 {
 			st.Config.RenewPreferenceDays = renewDays
 		}
@@ -812,6 +980,57 @@ func (w *Web) handleSettingsSave(rw http.ResponseWriter, r *http.Request) {
 	}
 	w.srv.TelegramReset()
 	w.redirect(rw, r, "/settings")
+}
+
+// telegramConfigChanged reports whether a settings submission changes the bot
+// token, the authorized private-chat user, or the enabled state. Stopping the
+// bot or activating a stored credential is a sensitive control change too, so
+// all three require re-authentication.
+func telegramConfigChanged(current domain.SystemConfig, token string, clear bool, chatID int64, enabled bool) bool {
+	tokenChanged := (clear && current.TelegramToken != "") ||
+		(token != "" && token != current.TelegramToken)
+	return tokenChanged || chatID != current.TelegramChatID || enabled != current.TelegramEnabled
+}
+
+// verifyReauthentication confirms the current password and, when 2FA is
+// enabled, consumes a one-time code. The password is checked outside authMu;
+// only the one-time factor consumption and its account quota take the lock.
+func (w *Web) verifyReauthentication(rw http.ResponseWriter, r *http.Request) bool {
+	if !w.allowSourceAttempt(rw, r) {
+		return false
+	}
+	admin := w.srv.getAdmin()
+	passwordOK, ok := w.verifyPasswordGated(rw, r.PostForm.Get("password"), admin.PasswordHash)
+	if !ok {
+		return false
+	}
+	if !passwordOK {
+		http.Error(rw, "修改 Telegram 配置需要验证当前密码", http.StatusForbidden)
+		return false
+	}
+	if !admin.TwoFactor.Enabled {
+		return true
+	}
+	w.authMu.Lock()
+	defer w.authMu.Unlock()
+	current := w.srv.getAdmin()
+	if !current.TwoFactor.Enabled || current.PasswordHash != admin.PasswordHash {
+		http.Error(rw, "账户状态已变化，请重试", http.StatusForbidden)
+		return false
+	}
+	if !w.allowSensitiveAttempt(rw) {
+		return false
+	}
+	ok, err := w.consumeSecondFactor(r.PostForm.Get("otp"))
+	if err != nil {
+		http.Error(rw, "验证失败，请稍后重试", http.StatusInternalServerError)
+		return false
+	}
+	if !ok {
+		http.Error(rw, "密码或验证码错误", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func validTelegramBotToken(token string) bool {
@@ -847,7 +1066,7 @@ func (w *Web) handleCAAdd(rw http.ResponseWriter, r *http.Request) {
 	id, _ := newID()
 	_ = w.srv.st.WithState(true, func(st *domain.State) error {
 		st.CAs[id] = &domain.ACMECA{
-			ID: id, Name: r.FormValue("name"), DirectoryURL: r.FormValue("directory_url"),
+			ID: id, Name: r.PostForm.Get("name"), DirectoryURL: r.PostForm.Get("directory_url"),
 			Enabled: true, CreatedAt: time.Now(),
 		}
 		return nil
@@ -908,6 +1127,7 @@ type certificateForm struct {
 	ACMEID       string
 	KeyType      string
 	Enabled      bool
+	CSRF         string
 	Selected     map[string]bool
 	Credentials  []credOption
 	CAs          []caView
@@ -1014,18 +1234,8 @@ func certificateDeployError(cert *domain.Certificate) string {
 	return strings.Join(parts, "；")
 }
 
-// Forwarded HTTPS is accepted only from a configured proxy, matching IP attribution.
+// requestHTTPS marks the session cookie Secure when the browser connection is
+// TLS, either directly or via a configured trusted proxy.
 func (w *Web) requestHTTPS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	if r.Header.Get("X-Forwarded-Proto") != "https" {
-		return false
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer, err := netip.ParseAddr(host)
-	return err == nil && w.srv != nil && trustedProxyIP(peer.Unmap(), w.srv.cfg.TrustedProxies)
+	return w.requestScheme(r) == "https"
 }

@@ -13,6 +13,36 @@
 #   sudo ./install.sh -agent-port 9444      # agent control port
 #
 set -euo pipefail
+umask 077
+
+# Keep arbitrary installation paths inside a single JSON string.
+json_quote() {
+  local LC_ALL=C value="$1" char i
+  printf '"'
+  for ((i=0; i<${#value}; i++)); do
+    char="${value:i:1}"
+    case "$char" in
+      '"') printf '\\"' ;;
+      '\') printf '\\\\' ;;
+      [[:cntrl:]]) printf '\\u%04x' "'$char" ;;
+      *) printf '%s' "$char" ;;
+    esac
+  done
+  printf '"'
+}
+
+unit_quote() {
+  local value="${1//%/%%}"
+  json_quote "$value"
+}
+
+set_install_dir() {
+  case "$1" in
+    ''|*/) echo "-config must name a file" >&2; exit 1 ;;
+    */*) INSTALL_DIR="${1%/*}"; [ -n "$INSTALL_DIR" ] || INSTALL_DIR=/ ;;
+    *) INSTALL_DIR=. ;;
+  esac
+}
 
 REPO="Flyinsky2004/oh-my-acme"
 VERSION="latest"
@@ -27,11 +57,15 @@ while [ $# -gt 0 ]; do
     -repo|--repo)       REPO="$2"; shift 2 ;;
     -port|--port)       WEB_PORT="$2"; shift 2 ;;
     -agent-port|--agent-port|--control-port) CONTROL_PORT="$2"; shift 2 ;;
-    -config|--config)   INSTALL_DIR="$(dirname "$2")"; shift 2 ;;
+    -config|--config)   set_install_dir "$2"; shift 2 ;;
     -h|--help)
       echo "usage: $0 [-version vX.Y.Z] [-repo OWNER/REPO] [-port N] [-agent-port N]"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
+done
+
+for port in "$WEB_PORT" "$CONTROL_PORT"; do
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || { echo "invalid port" >&2; exit 1; }
 done
 
 if [ "$(id -u)" -ne 0 ]; then echo "must run as root" >&2; exit 1; fi
@@ -53,8 +87,9 @@ fi
 DOWNLOAD_URL="${RELEASE_BASE}/oh-my-acme-server_linux_${GOARCH}.tar.gz"
 CHECKSUM_URL="${RELEASE_BASE}/checksums.txt"
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d /tmp/oh-my-acme-server.XXXXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
+trap 'exit 1' HUP INT TERM
 
 log() { printf '\033[1;32m[oh-my-acme]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[oh-my-acme]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -63,11 +98,11 @@ log "downloading ${DOWNLOAD_URL}"
 CURL="$(command -v curl || true)"
 WGET="$(command -v wget || true)"
 if [ -n "$CURL" ]; then
-  curl -fsSL -o "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || fail "download failed"
-  curl -fsSL -o "$TMP/checksums.txt" "$CHECKSUM_URL" || fail "checksums download failed"
+  curl --proto '=https' --proto-redir '=https' -fsSL -o "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || fail "download failed"
+  curl --proto '=https' --proto-redir '=https' -fsSL -o "$TMP/checksums.txt" "$CHECKSUM_URL" || fail "checksums download failed"
 elif [ -n "$WGET" ]; then
-  wget -q -O "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || fail "download failed"
-  wget -q -O "$TMP/checksums.txt" "$CHECKSUM_URL" || fail "checksums download failed"
+  wget --https-only -q -O "$TMP/archive.tar.gz" "$DOWNLOAD_URL" || fail "download failed"
+  wget --https-only -q -O "$TMP/checksums.txt" "$CHECKSUM_URL" || fail "checksums download failed"
 else
   fail "neither curl nor wget is installed"
 fi
@@ -96,9 +131,9 @@ if [ "$IF_EXISTS" -eq 0 ]; then
   "web_port": ${WEB_PORT},
   "control_listen": "0.0.0.0",
   "control_port": ${CONTROL_PORT},
-  "data_dir": "${INSTALL_DIR}/data",
-  "pki_dir": "${INSTALL_DIR}/pki",
-  "log_dir": "${INSTALL_DIR}/logs",
+  "data_dir": $(json_quote "${INSTALL_DIR}/data"),
+  "pki_dir": $(json_quote "${INSTALL_DIR}/pki"),
+  "log_dir": $(json_quote "${INSTALL_DIR}/logs"),
   "log_level": "info",
   "two_factor_encryption_key": ""
 }
@@ -122,8 +157,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-EnvironmentFile=-${INSTALL_DIR}/server.env
-ExecStart=${BIN_TARGET} -config ${INSTALL_DIR}/config.json
+EnvironmentFile=-$(unit_quote "${INSTALL_DIR}/server.env")
+ExecStart=:$(unit_quote "$BIN_TARGET") -config $(unit_quote "${INSTALL_DIR}/config.json")
 Restart=on-failure
 RestartSec=3
 User=root
@@ -131,7 +166,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=${INSTALL_DIR}
+ReadWritePaths=$(unit_quote "$INSTALL_DIR")
 LimitNOFILE=65536
 
 [Install]

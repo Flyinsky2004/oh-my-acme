@@ -53,6 +53,7 @@
 
 {{define "certificate-deploy-form"}}
 <form hx-post="/certificates/{{.ID}}/deploy" hx-target="#cert-{{.ID}}" hx-swap="outerHTML" hx-disabled-elt="find button[type='submit']" hx-confirm="警告：是否要对「{{.RootDomain}}」执行「下发证书」操作？" data-deploy-form>
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
   <header class="deploy-dialog-header">
     <h2 id="deploy-dialog-title">下发证书</h2>
     <p class="cell-primary">{{.RootDomain}}</p>

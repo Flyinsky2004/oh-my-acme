@@ -10,6 +10,7 @@
 
 <div class="section-stack">
   <form class="glass-panel compact-form" method="post" action="/agents/token">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
     <div class="field">
       <label class="field-label" for="agent-name">Agent 名称</label>
       <input id="agent-name" name="name" required>
@@ -64,6 +65,7 @@
                 <span class="badge running">正在更新到 {{.UpdateTarget}}</span>
               {{else if .Versions}}
                 <form class="table-form" method="post" action="/agents/{{.ID}}/update" data-confirm-action="更新 Agent" data-confirm-target="{{.Name}}">
+                  <input type="hidden" name="csrf" value="{{$.CSRF}}">
                   {{$default := .DefaultVersion}}
                   <label class="sr-only" for="agent-version-{{.ID}}">目标版本</label>
                   <select id="agent-version-{{.ID}}" name="version">

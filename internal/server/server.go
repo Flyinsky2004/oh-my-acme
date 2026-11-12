@@ -34,10 +34,21 @@ func (s *Server) setupPending() bool {
 }
 
 // AgentInstallCommand builds the command line an admin runs on a target
-// machine to install and register a new agent. A released server downloads the
-// installer from its own immutable GitHub Release and pins the Agent to the
-// same version, avoiding protocol drift. Development builds use main/latest.
+// machine to install and register a new agent. It keeps the historical
+// behaviour of elevating with sudo; callers that already run as root can use
+// AgentInstallCommandWithSudo(..., false).
 func (s *Server) AgentInstallCommand(name, token string) string {
+	return s.AgentInstallCommandWithSudo(name, token, true)
+}
+
+// AgentInstallCommandWithSudo builds the install command. includeSudo only
+// changes the outermost elevation prefix ("sudo bash -c" vs "bash -c"); the
+// bootstrap script, pinned download sources, checksum verification, private
+// temporary directory and every quoted argument are identical in both
+// variants. A released server downloads the installer from its own immutable
+// GitHub Release and pins the Agent to the same version, avoiding protocol
+// drift. Development builds use main/latest.
+func (s *Server) AgentInstallCommandWithSudo(name, token string, includeSudo bool) string {
 	host := strings.TrimSpace(s.st.State().Config.ServerHost)
 	if host == "" {
 		// Interface enumeration can be unavailable in a restricted environment.
@@ -76,9 +87,13 @@ if [ -n "$2" ]; then
 fi
 shift 2
 bash "$tmp/install.sh" "$@"`
+	elevation := "bash"
+	if includeSudo {
+		elevation = "sudo bash"
+	}
 	return fmt.Sprintf(
-		"sudo bash -c %s oh-my-acme-install %s %s -server %s -token %s -ca-fingerprint %s -name %s -port 9123%s",
-		shellQuote(bootstrap), shellQuote(installerURL), shellQuote(checksumURL), shellQuote(control), shellQuote(token), shellQuote(s.serverLeafFP), shellQuote(name), versionArg,
+		"%s -c %s oh-my-acme-install %s %s -server %s -token %s -ca-fingerprint %s -name %s -port 9123%s",
+		elevation, shellQuote(bootstrap), shellQuote(installerURL), shellQuote(checksumURL), shellQuote(control), shellQuote(token), shellQuote(s.serverLeafFP), shellQuote(name), versionArg,
 	)
 }
 

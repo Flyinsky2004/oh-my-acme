@@ -154,11 +154,15 @@ type Agent struct {
 
 // TokenRecord is a one-time registration token.
 type TokenRecord struct {
-	Token     string    `json:"token"`
-	AgentID   string    `json:"agent_id"`
-	AgentName string    `json:"agent_name"`
-	ExpiresAt time.Time `json:"expires_at"`
-	UsedAt    time.Time `json:"used_at,omitempty"`
+	Token     string `json:"token"`
+	AgentID   string `json:"agent_id"`
+	AgentName string `json:"agent_name"`
+	// CertificateIDs optionally selects existing certificates to which the
+	// newly registered agent is appended. Legacy tokens omit the field and
+	// therefore bind no certificates.
+	CertificateIDs []string  `json:"certificate_ids,omitempty"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	UsedAt         time.Time `json:"used_at,omitempty"`
 }
 
 // TokenConsumable reports whether the token is still valid for a registration.

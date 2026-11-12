@@ -18,6 +18,9 @@ import (
 var (
 	errRegisterTokenInvalid = errors.New("invalid or expired registration token")
 	errRegisterTokenBound   = errors.New("token bound to a different agent")
+	// errCertificateSelectionNotFound rejects a token whose selected
+	// certificate does not exist (or was deleted) at mint time.
+	errCertificateSelectionNotFound = errors.New("selected certificate not found")
 )
 
 // registerBeforeConsume is a test seam invoked after the CSR is signed and
@@ -143,6 +146,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			GOOS: req.GOOS, GOARCH: req.GOARCH,
 			RegisteredAt: now, CertExpiresAt: agentCert.NotAfter, LastSeenAt: now,
 		}
+		// Bind the new agent to the certificates selected when the token was
+		// minted. A certificate deleted in the meantime is skipped so the
+		// still-valid token can complete; existing targets and deploy records
+		// are preserved and the binding is idempotent.
+		for _, certID := range rec.CertificateIDs {
+			cert := st.Certificates[certID]
+			if cert == nil {
+				continue
+			}
+			if !containsString(cert.TargetAgents, agentID) {
+				cert.TargetAgents = append(cert.TargetAgents, agentID)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -197,8 +213,21 @@ func parseAgentCSR(raw string) (*x509.CertificateRequest, error) {
 }
 
 // CreateAgentToken mints a one-time registration token for an agent with a
-// given name. It returns the token, the agent ID and an install command hint.
+// given name. It keeps the legacy behaviour of selecting no certificates.
 func (s *Server) CreateAgentToken(name string) (token string, agentID string, err error) {
+	return s.CreateAgentTokenWithCertificates(name, nil)
+}
+
+// CreateAgentTokenWithCertificates mints a one-time registration token that
+// also selects existing certificates. When the token is later consumed, the
+// registered agent ID is appended to each selected certificate's TargetAgents.
+//
+// Selection is deduplicated and validated inside the same store transaction
+// that writes the token, so an unknown certificate never leaves a partial
+// token behind. An empty selection is valid and preserves the legacy
+// behaviour. The binding only happens at registration time, so an unused or
+// expired token never creates a dangling target.
+func (s *Server) CreateAgentTokenWithCertificates(name string, certificateIDs []string) (token string, agentID string, err error) {
 	agentID, err = store.NewID()
 	if err != nil {
 		return "", "", err
@@ -207,12 +236,19 @@ func (s *Server) CreateAgentToken(name string) (token string, agentID string, er
 	if err != nil {
 		return "", "", err
 	}
+	selected := dedupeStrings(certificateIDs)
 	err = s.st.WithState(true, func(st *domain.State) error {
+		for _, certID := range selected {
+			if st.Certificates[certID] == nil {
+				return fmt.Errorf("%w: %s", errCertificateSelectionNotFound, certID)
+			}
+		}
 		st.Tokens[token] = &domain.TokenRecord{
-			Token:     token,
-			AgentID:   agentID,
-			AgentName: name,
-			ExpiresAt: time.Now().Add(10 * time.Minute),
+			Token:          token,
+			AgentID:        agentID,
+			AgentName:      name,
+			CertificateIDs: selected,
+			ExpiresAt:      time.Now().Add(10 * time.Minute),
 		}
 		return nil
 	})
@@ -257,6 +293,25 @@ func removeString(list []string, v string) []string {
 		if x != v {
 			out = append(out, x)
 		}
+	}
+	return out
+}
+
+// dedupeStrings removes duplicates while preserving first-seen order. It
+// returns nil for an empty input so an unselected token stays JSON-identical
+// to a legacy token.
+func dedupeStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
 	}
 	return out
 }

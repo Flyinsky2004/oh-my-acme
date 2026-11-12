@@ -158,6 +158,31 @@ func TestCompiledCSSHasNoRemoteDependencies(t *testing.T) {
 	}
 }
 
+func TestAgentsPageReferencesVersionedScript(t *testing.T) {
+	body, err := fs.ReadFile(templatesFS, "web/templates/agents.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `{{assetURL "agents.js"}}`) {
+		t.Error("agents template does not reference agents.js through assetURL")
+	}
+	asset, err := fs.ReadFile(staticFS, "web/static/agents.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asset) == 0 {
+		t.Fatal("agents.js is empty")
+	}
+	assetURL, err := staticAssetURL("agents.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(asset)
+	if want := fmt.Sprintf("/static/agents.js?v=%x", sum[:8]); assetURL != want {
+		t.Errorf("agents.js asset URL = %q, want %q", assetURL, want)
+	}
+}
+
 func TestCompiledCSSKeepsCodeSelectionReadable(t *testing.T) {
 	body, err := fs.ReadFile(staticFS, "web/static/app.css")
 	if err != nil {

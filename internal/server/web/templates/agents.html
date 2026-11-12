@@ -9,17 +9,39 @@
 </header>
 
 <div class="section-stack">
+  {{if .Notice}}<div class="glass-panel" role="status"><p>{{.Notice}}</p></div>{{end}}
+  {{if .NoticeError}}<div class="glass-panel" role="alert"><p class="err">{{.NoticeError}}</p></div>{{end}}
+  {{if .CatalogError}}<div class="glass-panel" role="status"><p class="hint">无法获取 GitHub 发布目录：{{.CatalogError}}。Agent 列表仍可正常查看。</p></div>{{end}}
+
   <form class="glass-panel compact-form" method="post" action="/agents/token">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <div class="field">
       <label class="field-label" for="agent-name">Agent 名称</label>
-      <input id="agent-name" name="name" required>
+      <input id="agent-name" name="name" value="{{.Name}}" required>
     </div>
     <button type="submit">{{template "icon-terminal"}}生成安装命令</button>
+    <fieldset class="field field-full">
+      <legend class="field-label">注册后加入证书</legend>
+      {{if .Certificates}}
+      <div>
+        {{range .Certificates}}
+        <label class="checkbox-field" for="agent-cert-{{.ID}}">
+          <input id="agent-cert-{{.ID}}" type="checkbox" name="certificates" value="{{.ID}}" {{if index $.SelectedCertificates .ID}}checked{{end}}>
+          <span>{{.RootDomain}}</span>
+        </label>
+        {{end}}
+      </div>
+      <span class="hint">注册成功后，该 Agent 会自动加入所选证书的目标列表；之后按原有流程下发证书。</span>
+      {{else}}
+      <span class="hint">暂无证书；可以先注册 Agent，稍后在证书页面添加目标。</span>
+      {{end}}
+    </fieldset>
   </form>
 
+  {{if .TokenError}}<div class="glass-panel" role="alert"><p class="err">生成安装命令失败：{{.TokenError}}</p></div>{{end}}
+
   {{if .InstallCommand}}
-  <section class="glass-panel" aria-labelledby="install-command-title">
+  <section class="glass-panel" aria-labelledby="install-command-title" data-install-command data-command-sudo="{{.InstallCommand}}" data-command-plain="{{.InstallCommandNoSudo}}">
     <div class="panel-header">
       <div>
         <h2 id="install-command-title">安装命令</h2>
@@ -27,11 +49,29 @@
       </div>
       <button type="button" class="button button-secondary copy-button" data-copy-target="install-command-code" aria-label="复制安装命令">{{template "icon-copy"}}<span>复制</span></button>
     </div>
+    <label class="checkbox-field" for="install-sudo">
+      <input id="install-sudo" type="checkbox" checked data-install-sudo>
+      <span>包含 sudo（已有 root 权限的终端可取消）</span>
+    </label>
     <pre><code id="install-command-code">{{.InstallCommand}}</code></pre>
   </section>
   {{end}}
 
   {{if .Agents}}
+  <div class="panel-header">
+    <div>
+      <h2>Agent 列表</h2>
+      <p class="muted">逐台更新，或一次更新所有可更新的 Agent。</p>
+    </div>
+    {{if .CanUpdateAll}}
+    <form method="post" action="/agents/update-all" data-confirm-action="更新全部 Agent" data-confirm-target="全部可更新 Agent（{{.UpdateCandidateCount}} 台）" data-confirm-notice="本次将更新：{{.UpdateCandidateNames}}">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <button type="submit">{{template "icon-refresh"}}更新全部</button>
+    </form>
+    {{else if .UpdateAllHint}}
+    <span class="hint">{{.UpdateAllHint}}</span>
+    {{end}}
+  </div>
   <div class="table-shell">
     <div class="table-scroll" role="region" tabindex="0" aria-label="Agent 列表">
       <table>
@@ -73,8 +113,10 @@
                   </select>
                   <button type="submit">{{template "icon-refresh"}}更新</button>
                 </form>
+              {{else if .VersionHint}}
+                <span class="muted">{{.VersionHint}}</span>
               {{else}}
-                <span class="muted">{{if .UpdateHint}}{{.UpdateHint}}{{else}}已是最新{{end}}</span>
+                <span class="muted">已是最新</span>
               {{end}}
               {{if .UpdateError}}<div class="err" role="alert">{{.UpdateError}}</div>{{end}}
             </td>
@@ -89,43 +131,5 @@
   <div class="glass-panel empty-state"><div class="empty-state-inner"><span class="empty-icon">{{template "icon-agents"}}</span><h2>还没有 Agent</h2><p>生成安装命令后，在目标服务器执行即可完成注册。</p></div></div>
   {{end}}
 </div>
-<script>
-(function () {
-  function copyText(text, done) {
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
-      return;
-    }
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    var ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-    document.body.removeChild(ta);
-    done(ok);
-  }
-  document.querySelectorAll('.copy-button').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var target = document.getElementById(btn.getAttribute('data-copy-target'));
-      if (!target) { return; }
-      var label = btn.querySelector('span') || btn;
-      var original = btn.getAttribute('data-original') || label.textContent;
-      btn.setAttribute('data-original', original);
-      copyText(target.innerText, function (ok) {
-        label.textContent = ok ? '已复制' : '复制失败';
-        btn.setAttribute('aria-label', ok ? '已复制' : '复制失败');
-        setTimeout(function () {
-          label.textContent = original;
-          btn.setAttribute('aria-label', '复制安装命令');
-        }, 1600);
-      });
-    });
-  });
-})();
-</script>
+<script src="{{assetURL "agents.js"}}" defer></script>
 {{end}}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -105,6 +106,7 @@ func (w *Web) Handler() http.Handler {
 
 	mux.Handle("GET /agents", w.auth(w.handleAgents))
 	mux.Handle("POST /agents/token", w.auth(w.handleAgentToken))
+	mux.Handle("POST /agents/update-all", w.auth(w.handleAgentUpdateAll))
 	mux.Handle("POST /agents/{id}/update", w.auth(w.handleAgentUpdate))
 	mux.Handle("POST /agents/{id}/delete", w.auth(w.handleAgentDelete))
 
@@ -784,68 +786,79 @@ func (w *Web) handleCredentialUpdate(rw http.ResponseWriter, r *http.Request) {
 
 // --- agents ---
 
+// agentsPageTimeout bounds the single shared release-catalog query behind one
+// /agents render. It is applied once for the whole page, never per Agent.
+const agentsPageTimeout = 12 * time.Second
+
+// agentRow is one rendered row of the Agent table. VersionHint explains why no
+// upgrade options are shown (catalog/health/platform error, or because this
+// response deliberately did not query the release catalog).
+type agentRow struct {
+	ID, Name, Addr, Status, StatusLabel, Version, Platform, CertExpiresAt string
+	UpdateStatus, UpdateTarget, UpdateError, VersionHint                  string
+	Versions                                                              []string
+	DefaultVersion                                                        string
+}
+
+// agentCertificateOption is one selectable certificate in the registration
+// form. Only the root domain is shown; the ID remains the submitted value.
+type agentCertificateOption struct {
+	ID, RootDomain string
+}
+
 func (w *Web) handleAgents(rw http.ResponseWriter, r *http.Request) {
-	type row struct {
-		ID, Name, Addr, Status, StatusLabel, Version, Platform, CertExpiresAt string
-		UpdateStatus, UpdateTarget, UpdateError, UpdateHint                   string
-		Versions                                                              []string
-		DefaultVersion                                                        string
+	ctx, cancel := context.WithTimeout(r.Context(), agentsPageTimeout)
+	defer cancel()
+	versions, catalogErr := w.srv.AllAgentVersions(ctx)
+	data := w.agentsPageData(versions, true)
+	if catalogErr != nil {
+		data["CatalogError"] = catalogErr.Error()
+		data["UpdateAllHint"] = "无法获取 GitHub 发布目录，暂时无法批量更新。"
 	}
-	initial := w.srv.st.State()
-	rows := make([]row, 0, len(initial.Agents))
-	for agentID := range initial.Agents {
-		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-		versions, versionErr := w.srv.AgentVersions(ctx, agentID)
-		cancel()
-		a := w.srv.st.State().Agents[agentID]
-		if a == nil {
-			continue
-		}
-		statusLabel := map[domain.AgentStatus]string{
-			domain.AgentRegistered: "已注册", domain.AgentUnreachable: "不可达",
-			domain.AgentDisabled: "已禁用", domain.AgentUnregistered: "未注册",
-		}[a.Status]
-		expiresAt := "—"
-		if !a.CertExpiresAt.IsZero() {
-			expiresAt = a.CertExpiresAt.Format("2006-01-02")
-		}
-		defaultVersion := ""
-		if containsString(versions, Version) {
-			defaultVersion = Version
-		} else if len(versions) > 0 {
-			defaultVersion = versions[0]
-		}
-		hint := ""
-		if versionErr != nil {
-			hint = versionErr.Error()
-		}
-		platform := "—"
-		if a.GOOS != "" && a.GOARCH != "" {
-			platform = a.GOOS + "/" + a.GOARCH
-		}
-		rows = append(rows, row{
-			ID: a.ID, Name: a.Name, Addr: a.Address + ":" + strconv.Itoa(a.Port),
-			Status: string(a.Status), StatusLabel: statusLabel, Version: a.Version,
-			Platform: platform, CertExpiresAt: expiresAt,
-			UpdateStatus: string(a.UpdateStatus), UpdateTarget: a.UpdateTargetVersion,
-			UpdateError: a.UpdateError, UpdateHint: hint,
-			Versions: versions, DefaultVersion: defaultVersion,
-		})
-	}
-	w.page(rw, r, "Agent", "/agents", "agents", map[string]any{"Agents": rows, "ServerVersion": Version})
+	w.page(rw, r, "Agent", "/agents", "agents", data)
 }
 
 func (w *Web) handleAgentToken(rw http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	name := r.PostForm.Get("name")
-	token, agentID, err := w.srv.CreateAgentToken(name)
-	if err != nil {
+	if err := r.ParseForm(); err != nil {
 		writeJSONErr(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	_ = agentID
-	cmd := w.srv.AgentInstallCommand(name, token)
-	w.page(rw, r, "Agent", "/agents", "agents", map[string]any{"InstallCommand": cmd, "ServerVersion": Version})
+	name := r.PostForm.Get("name")
+	selected := r.PostForm["certificates"]
+	token, _, err := w.srv.CreateAgentTokenWithCertificates(name, selected)
+	data := w.agentsPageData(nil, false)
+	data["Name"] = name
+	data["SelectedCertificates"] = certificateSelection(selected)
+	if err != nil {
+		data["TokenError"] = err.Error()
+		w.page(rw, r, "Agent", "/agents", "agents", data)
+		return
+	}
+	data["InstallCommand"] = w.srv.AgentInstallCommandWithSudo(name, token, true)
+	data["InstallCommandNoSudo"] = w.srv.AgentInstallCommandWithSudo(name, token, false)
+	w.page(rw, r, "Agent", "/agents", "agents", data)
+}
+
+func (w *Web) handleAgentUpdateAll(rw http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		writeJSONErr(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+	// The batch target is chosen by the Server from its own catalog snapshot;
+	// any client-supplied version/target fields are intentionally ignored.
+	started, skipped, err := w.srv.StartAllAgentUpdates()
+	data := w.agentsPageData(nil, false)
+	if started > 0 || skipped > 0 {
+		notice := fmt.Sprintf("已启动 %d 台，跳过 %d 台。", started, skipped)
+		if started == 0 {
+			notice += "没有可更新的 Agent。"
+		}
+		data["Notice"] = notice
+	}
+	if err != nil {
+		data["NoticeError"] = err.Error()
+	}
+	w.page(rw, r, "Agent", "/agents", "agents", data)
 }
 
 func (w *Web) handleAgentUpdate(rw http.ResponseWriter, r *http.Request) {
@@ -863,6 +876,131 @@ func (w *Web) handleAgentUpdate(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) handleAgentDelete(rw http.ResponseWriter, r *http.Request) {
 	w.srv.DeleteAgent(r.PathValue("id"))
 	w.redirect(rw, r, "/agents")
+}
+
+// agentsPageData builds the shared /agents payload. versions may be nil when a
+// response must not trigger a release-catalog query (token creation and batch
+// update feedback); rows then explain that a refresh is needed before per-Agent
+// upgrades can be offered.
+func (w *Web) agentsPageData(versions map[string]AgentVersionOptions, loaded bool) map[string]any {
+	rows := w.agentRows(versions, loaded)
+	data := map[string]any{
+		"Agents":               rows,
+		"Certificates":         w.agentCertificateOptions(),
+		"SelectedCertificates": map[string]bool{},
+		"Name":                 "",
+		"ServerVersion":        Version,
+		"CanUpdateAll":         false,
+		"UpdateCandidateCount": 0,
+		"UpdateCandidateNames": "",
+	}
+	if !loaded {
+		return data
+	}
+	candidates := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.UpdateStatus == string(domain.StatusRunning) || len(row.Versions) == 0 {
+			continue
+		}
+		candidates = append(candidates, row.Name)
+	}
+	data["CanUpdateAll"] = len(candidates) > 0
+	data["UpdateCandidateCount"] = len(candidates)
+	data["UpdateCandidateNames"] = strings.Join(candidates, "、")
+	if len(rows) > 0 && len(candidates) == 0 {
+		data["UpdateAllHint"] = "当前没有可更新的 Agent（均已是最新、正在更新或不可用）。"
+	}
+	return data
+}
+
+func (w *Web) agentRows(versions map[string]AgentVersionOptions, loaded bool) []agentRow {
+	st := w.srv.st.State()
+	ids := make([]string, 0, len(st.Agents))
+	for id := range st.Agents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	rows := make([]agentRow, 0, len(ids))
+	for _, id := range ids {
+		a := st.Agents[id]
+		if a == nil {
+			continue
+		}
+		statusLabel := map[domain.AgentStatus]string{
+			domain.AgentRegistered: "已注册", domain.AgentUnreachable: "不可达",
+			domain.AgentDisabled: "已禁用", domain.AgentUnregistered: "未注册",
+		}[a.Status]
+		expiresAt := "—"
+		if !a.CertExpiresAt.IsZero() {
+			expiresAt = a.CertExpiresAt.Format("2006-01-02")
+		}
+		platform := "—"
+		if a.GOOS != "" && a.GOARCH != "" {
+			platform = a.GOOS + "/" + a.GOARCH
+		}
+		row := agentRow{
+			ID: a.ID, Name: a.Name, Addr: a.Address + ":" + strconv.Itoa(a.Port),
+			Status: string(a.Status), StatusLabel: statusLabel, Version: a.Version,
+			Platform: platform, CertExpiresAt: expiresAt,
+			UpdateStatus: string(a.UpdateStatus), UpdateTarget: a.UpdateTargetVersion,
+			UpdateError: a.UpdateError,
+		}
+		if loaded {
+			// An Agent registered while the shared check was running has no
+			// entry in this snapshot. Its zero value must not be mistaken for
+			// "already up to date", so require an explicit presence check.
+			option, checked := versions[id]
+			if !checked {
+				row.VersionHint = "尚未检查版本，请刷新后重试"
+			} else {
+				row.Versions = option.Versions
+				if option.Err != nil {
+					row.VersionHint = option.Err.Error()
+				}
+				if containsString(option.Versions, Version) {
+					row.DefaultVersion = Version
+				} else if len(option.Versions) > 0 {
+					row.DefaultVersion = option.Versions[0]
+				}
+			}
+		} else {
+			row.VersionHint = "刷新页面后获取可用版本"
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Name != rows[j].Name {
+			return rows[i].Name < rows[j].Name
+		}
+		return rows[i].ID < rows[j].ID
+	})
+	return rows
+}
+
+func (w *Web) agentCertificateOptions() []agentCertificateOption {
+	st := w.srv.st.State()
+	options := make([]agentCertificateOption, 0, len(st.Certificates))
+	for _, cert := range st.Certificates {
+		if cert == nil {
+			continue
+		}
+		options = append(options, agentCertificateOption{ID: cert.ID, RootDomain: cert.RootDomain})
+	}
+	sort.SliceStable(options, func(i, j int) bool {
+		if options[i].RootDomain != options[j].RootDomain {
+			return options[i].RootDomain < options[j].RootDomain
+		}
+		return options[i].ID < options[j].ID
+	})
+	return options
+}
+
+func certificateSelection(ids []string) map[string]bool {
+	selected := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		selected[id] = true
+	}
+	return selected
 }
 
 // --- settings ---

@@ -135,3 +135,23 @@ test("update cancellation blocks a regular form and identifies its target versio
   assert.match(questions[0], /edge-1/);
   assert.match(questions[0], /更新 Agent 至 v1\.2\.3/);
 });
+
+test("a batch update confirmation lists the agents it will update", () => {
+  const { document, questions } = loadBeforePageContent();
+  const form = {
+    matches: () => true,
+    dataset: {
+      confirmAction: "更新全部 Agent",
+      confirmTarget: "全部可更新 Agent（2 台）",
+      confirmNotice: "本次将更新：edge-1、edge-2",
+    },
+    querySelector: () => null,
+  };
+  const event = new Event("submit", { cancelable: true });
+  Object.defineProperty(event, "target", { value: form });
+  document.dispatchEvent(event);
+  assert.equal(event.defaultPrevented, true);
+  assert.match(questions[0], /更新全部 Agent/);
+  assert.match(questions[0], /2 台/);
+  assert.match(questions[0], /edge-1、edge-2/);
+});

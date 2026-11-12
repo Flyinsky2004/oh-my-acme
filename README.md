@@ -42,7 +42,7 @@ Agent 首次注册成功后会把实际连接到的 Server IP 记录为精确的
 
 ## Web UI 样式
 
-部署运行、普通 `go build` 和 GitHub Release 都使用仓库中已提交的 `internal/server/web/static/app.css`，不需要 Node、npm、CDN 或在线字体。只有修改 Tailwind 源文件 `internal/server/web/styles/app.css` 时才需要 Node 22 开发工具：
+部署运行、普通 `go build` 和 GitHub Release 都使用仓库中已提交的 `internal/server/web/static/app.css`，不需要 Node、npm、CDN 或在线字体。开发时，修改 Tailwind 源文件 `internal/server/web/styles/app.css` 或 `internal/server/web/templates/` 下的模板后，都应使用 Node 22 重新生成并检查 CSS 产物。Tailwind 会扫描模板内容，因此移动或删除模板中的内联脚本也可能改变生成结果；生成的 `app.css` 应与模板改动一同提交。
 
 ```bash
 npm ci

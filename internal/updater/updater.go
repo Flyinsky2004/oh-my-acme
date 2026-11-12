@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -133,8 +131,15 @@ func Available(ctx context.Context, component Component, currentVersion string) 
 // used by the Server to filter options for a registered Agent; the Agent still
 // revalidates against its own runtime before replacing itself.
 func AvailableFor(ctx context.Context, component Component, currentVersion, goos, goarch string) ([]string, error) {
-	u := newUpdater(newGitHubClient(), "", platform{goos: goos, goarch: goarch})
-	releases, err := u.available(ctx, component, currentVersion)
+	current, target, err := parseTarget(component, currentVersion, goos, goarch)
+	if err != nil {
+		return nil, err
+	}
+	catalog, err := FetchCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	releases, err := catalog.eligible(component, current, target)
 	if err != nil {
 		return nil, err
 	}
@@ -233,42 +238,15 @@ func (u *updater) installRelease(ctx context.Context, component Component, targe
 }
 
 func (u *updater) available(ctx context.Context, component Component, currentVersion string) ([]release, error) {
-	current, err := parseSemVer(currentVersion)
-	if err != nil {
-		return nil, fmt.Errorf("parse current version %q: SemVer 2.0.0 required", currentVersion)
-	}
-	archiveName, err := archiveName(component, u.platform)
+	current, target, err := parseTarget(component, currentVersion, u.platform.goos, u.platform.goarch)
 	if err != nil {
 		return nil, err
 	}
-
-	var eligible []release
-	for page := 1; page <= maxPages; page++ {
-		body, err := u.request(ctx, http.MethodGet, releasesURL(page), "", maxReleaseResponseSize)
-		if err != nil {
-			return nil, fmt.Errorf("list releases page %d: %w", page, err)
-		}
-		var listed []githubRelease
-		if err := json.Unmarshal(body, &listed); err != nil {
-			return nil, fmt.Errorf("decode releases page %d: %w", page, err)
-		}
-		for _, candidate := range listed {
-			item, ok := candidate.eligible(archiveName, current)
-			if ok {
-				eligible = append(eligible, item)
-			}
-		}
-		if len(listed) < 100 {
-			break
-		}
-		if page == maxPages {
-			return nil, fmt.Errorf("release pagination exceeds %d pages", maxPages)
-		}
+	catalog, err := u.fetchCatalog(ctx)
+	if err != nil {
+		return nil, err
 	}
-	sort.Slice(eligible, func(i, j int) bool {
-		return eligible[i].version.compare(eligible[j].version) > 0
-	})
-	return uniqueReleases(eligible), nil
+	return catalog.eligible(component, current, target)
 }
 
 func (r githubRelease) eligible(archiveName string, current semVersion) (release, bool) {

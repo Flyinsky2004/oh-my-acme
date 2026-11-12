@@ -664,9 +664,16 @@ func (s *Server) AgentVersions(ctx context.Context, agentID string) ([]string, e
 		return nil, errNotFound
 	}
 	if agent.GOOS == "" || agent.GOARCH == "" {
-		return nil, fmt.Errorf("agent must be manually upgraded once before Web updates are available")
+		return nil, errAgentPlatformUnknown
 	}
-	return updater.AvailableFor(ctx, updater.ComponentAgent, agent.Version, agent.GOOS, agent.GOARCH)
+	catalog, err := fetchAgentCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if catalog == nil {
+		return nil, errors.New("release catalog is unavailable")
+	}
+	return catalog.AvailableFor(updater.ComponentAgent, agent.Version, agent.GOOS, agent.GOARCH)
 }
 
 // StartAgentUpdate validates the selected target and updates the Agent in a
@@ -681,7 +688,7 @@ func (s *Server) StartAgentUpdate(agentID, targetVersion string) error {
 	if !containsString(versions, targetVersion) {
 		return fmt.Errorf("version %q is not an eligible agent upgrade", targetVersion)
 	}
-	if err := s.setAgentUpdateState(agentID, domain.StatusRunning, targetVersion, ""); err != nil {
+	if err := s.claimAgentUpdate(agentID, targetVersion); err != nil {
 		return err
 	}
 	s.Go(func(parent context.Context) {

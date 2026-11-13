@@ -403,6 +403,201 @@ func TestAgentsPageSortsAgentsAndCertificates(t *testing.T) {
 	}
 }
 
+// getWeb sends a GET through the full handler with an optional session cookie.
+func getWeb(w *Web, path, sessionID string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	if sessionID != "" {
+		r.AddCookie(&http.Cookie{Name: w.cookie, Value: sessionID})
+	}
+	rw := httptest.NewRecorder()
+	w.Handler().ServeHTTP(rw, r)
+	return rw
+}
+
+// newAgentDeleteTestWeb builds a logged-in Web with two fake Agents and a
+// certificate that targets both, plus an in-memory release catalog so the
+// /agents page never reaches the network.
+func newAgentDeleteTestWeb(t *testing.T) (*Web, *store.Store, string, string) {
+	t.Helper()
+	st := newAgentUpdatesStore(t)
+	pool := x509.NewCertPool()
+	keep := newAgentUpdatesFake(t, pool, "agent-keep", "1.0.0", "linux", "amd64")
+	drop := newAgentUpdatesFake(t, pool, "agent-drop", "1.0.0", "linux", "amd64")
+	addAgentUpdatesAgent(t, st, agentUpdatesRegisteredAgent(t, keep, "1.0.0"))
+	addAgentUpdatesAgent(t, st, agentUpdatesRegisteredAgent(t, drop, "1.0.0"))
+	agentUpdatesInstallCatalog(t, []map[string]any{
+		agentUpdatesRelease(1, "v1.0.0", agentUpdatesAMD64Asset, agentUpdatesChecksums),
+	})
+	if err := st.WithState(true, func(state *domain.State) error {
+		state.Certificates["cert-1"] = &domain.Certificate{
+			ID: "cert-1", RootDomain: "example.com",
+			TargetAgents: []string{"agent-keep", "agent-drop"},
+			Deploys: map[string]*domain.AgentDeployState{
+				"agent-drop": {AgentID: "agent-drop", Status: domain.StatusSuccess},
+			},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	web := newAgentsTestWeb(t, st, pool)
+	if err := web.srv.setAdminPassword("admin", "test-password"); err != nil {
+		t.Fatal(err)
+	}
+	id, csrf := loginSession(t, web, "")
+	return web, st, id, csrf
+}
+
+// TestAgentDeleteHTMXRedirectsWholePage is the regression for the delete
+// button: HTMX must receive HX-Redirect, not a 3xx it would follow and swap
+// into the button, and the deletion must keep the other Agent and clean the
+// certificate's target/deploy references.
+func TestAgentDeleteHTMXRedirectsWholePage(t *testing.T) {
+	web, st, id, csrf := newAgentDeleteTestWeb(t)
+	rw := postWeb(web, "/agents/agent-drop/delete", id, csrf, nil, false, func(r *http.Request) {
+		r.Header.Set("HX-Request", "true")
+	})
+	if rw.Code/100 == 3 {
+		t.Fatalf("HTMX delete returned %d; the XHR would follow the redirect", rw.Code)
+	}
+	if rw.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rw.Code, rw.Body.String())
+	}
+	if got := rw.Header().Get("HX-Redirect"); got != "/agents" {
+		t.Fatalf("HX-Redirect = %q, want /agents", got)
+	}
+	if got := rw.Header().Get("Location"); got != "" {
+		t.Fatalf("HTMX response also carries Location %q", got)
+	}
+	if rw.Body.Len() != 0 {
+		t.Fatalf("HTMX response body = %q, want empty", rw.Body.String())
+	}
+
+	state := st.State()
+	if state.Agents["agent-drop"] != nil {
+		t.Fatal("target Agent was not deleted")
+	}
+	if state.Agents["agent-keep"] == nil {
+		t.Fatal("deleting one Agent removed another")
+	}
+	cert := state.Certificates["cert-1"]
+	if cert == nil {
+		t.Fatal("certificate disappeared")
+	}
+	if containsString(cert.TargetAgents, "agent-drop") {
+		t.Fatalf("deleted Agent is still a certificate target: %v", cert.TargetAgents)
+	}
+	if _, ok := cert.Deploys["agent-drop"]; ok {
+		t.Fatal("deleted Agent deploy state was not cleaned")
+	}
+	if !containsString(cert.TargetAgents, "agent-keep") {
+		t.Fatalf("remaining Agent was removed from the certificate: %v", cert.TargetAgents)
+	}
+
+	page := getWeb(web, "/agents", id)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET /agents status = %d, body=%s", page.Code, page.Body.String())
+	}
+	body := page.Body.String()
+	if !strings.Contains(body, "agent-keep") {
+		t.Error("remaining Agent is missing from the page")
+	}
+	if strings.Contains(body, "agent-drop") {
+		t.Error("deleted Agent is still rendered")
+	}
+	if got := strings.Count(body, `class="app-shell"`); got != 1 {
+		t.Fatalf("app shells = %d, want exactly one", got)
+	}
+}
+
+// TestAgentDeletePlainFormKeepsFoundRedirect proves non-HTMX form posts keep
+// the classic 302 + Location contract.
+func TestAgentDeletePlainFormKeepsFoundRedirect(t *testing.T) {
+	web, st, id, csrf := newAgentDeleteTestWeb(t)
+	rw := postWeb(web, "/agents/agent-drop/delete", id, csrf, nil, false, nil)
+	if rw.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body=%s", rw.Code, rw.Body.String())
+	}
+	if got := rw.Header().Get("Location"); got != "/agents" {
+		t.Fatalf("Location = %q, want /agents", got)
+	}
+	if got := rw.Header().Get("HX-Redirect"); got != "" {
+		t.Fatalf("plain response carries HX-Redirect %q", got)
+	}
+	if st.State().Agents["agent-drop"] != nil {
+		t.Fatal("plain delete did not remove the Agent")
+	}
+	if st.State().Agents["agent-keep"] == nil {
+		t.Fatal("plain delete removed another Agent")
+	}
+}
+
+// TestAgentDeleteRequiresAuthAndCSRF proves rejected deletes leave the target
+// in place.
+func TestAgentDeleteRequiresAuthAndCSRF(t *testing.T) {
+	web, st, id, _ := newAgentDeleteTestWeb(t)
+
+	rw := postWeb(web, "/agents/agent-drop/delete", "", "", nil, false, nil)
+	if rw.Code != http.StatusFound {
+		t.Fatalf("unauthenticated status = %d, want 302 to login", rw.Code)
+	}
+	if st.State().Agents["agent-drop"] == nil {
+		t.Fatal("unauthenticated request deleted the Agent")
+	}
+
+	rw = postWeb(web, "/agents/agent-drop/delete", id, "bad", nil, false, nil)
+	if rw.Code != http.StatusForbidden {
+		t.Fatalf("bad CSRF status = %d, want 403", rw.Code)
+	}
+	if st.State().Agents["agent-drop"] == nil {
+		t.Fatal("CSRF-less request deleted the Agent")
+	}
+}
+
+// TestAgentDeleteSequentialLeavesRemainingAndEmptyState deletes Agents one by
+// one through the real routes and checks the reloaded page after each step.
+func TestAgentDeleteSequentialLeavesRemainingAndEmptyState(t *testing.T) {
+	web, st, id, csrf := newAgentDeleteTestWeb(t)
+	deleteAgent := func(agentID string) {
+		t.Helper()
+		rw := postWeb(web, "/agents/"+agentID+"/delete", id, csrf, nil, false, func(r *http.Request) {
+			r.Header.Set("HX-Request", "true")
+		})
+		if rw.Code != http.StatusNoContent {
+			t.Fatalf("delete %s status = %d, body=%s", agentID, rw.Code, rw.Body.String())
+		}
+	}
+
+	deleteAgent("agent-drop")
+	page := getWeb(web, "/agents", id)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET /agents status = %d", page.Code)
+	}
+	body := page.Body.String()
+	if !strings.Contains(body, "agent-keep") || strings.Contains(body, "agent-drop") {
+		t.Fatal("page does not show exactly the remaining Agent")
+	}
+	if got := strings.Count(body, `class="app-shell"`); got != 1 {
+		t.Fatalf("app shells = %d, want exactly one", got)
+	}
+
+	deleteAgent("agent-keep")
+	if len(st.State().Agents) != 0 {
+		t.Fatalf("agents left = %d, want 0", len(st.State().Agents))
+	}
+	page = getWeb(web, "/agents", id)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET /agents status = %d", page.Code)
+	}
+	body = page.Body.String()
+	if !strings.Contains(body, "还没有 Agent") {
+		t.Error("empty state is missing after deleting the last Agent")
+	}
+	if got := strings.Count(body, `class="app-shell"`); got != 1 {
+		t.Fatalf("app shells = %d, want exactly one", got)
+	}
+}
+
 func attributeValue(t *testing.T, body, name string) string {
 	t.Helper()
 	match := regexp.MustCompile(regexp.QuoteMeta(name) + `="([^"]*)"`).FindStringSubmatch(body)

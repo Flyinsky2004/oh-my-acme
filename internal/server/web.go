@@ -258,7 +258,17 @@ func (w *Web) page(rw http.ResponseWriter, r *http.Request, title, path, fragmen
 	return nil
 }
 
+// redirect navigates the browser to to. A plain form post gets the classic
+// 302 + Location. An HTMX request instead gets HX-Redirect on a 204: HTMX
+// follows a 3xx with the XHR itself and swaps the resulting full page into the
+// element that triggered the request, so a redirect cannot be expressed as a
+// 3xx. HX-Redirect tells htmx to set window.location and reload the whole page.
 func (w *Web) redirect(rw http.ResponseWriter, r *http.Request, to string) {
+	if r.Header.Get("HX-Request") == "true" {
+		rw.Header().Set("HX-Redirect", to)
+		rw.WriteHeader(http.StatusNoContent)
+		return
+	}
 	http.Redirect(rw, r, to, http.StatusFound)
 }
 
